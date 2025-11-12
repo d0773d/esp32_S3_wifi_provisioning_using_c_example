@@ -1,0 +1,187 @@
+#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+#include "ble_provisioning.h"
+#include "wifi_manager.h"
+#include "provisioning_state.h"
+
+static const char *TAG = "MAIN";
+
+// Forward declaration
+static void state_change_handler(provisioning_state_t state, provisioning_status_code_t status, const char* message);
+
+/**
+ * @brief Main application entry point
+ */
+void app_main(void)
+{
+    ESP_LOGI(TAG, "=================================");
+    ESP_LOGI(TAG, "ESP32-S3 WiFi BLE Provisioning");
+    ESP_LOGI(TAG, "=================================");
+    
+    // Initialize NVS (required for WiFi and BLE)
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS partition needs erasing, erasing...");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    ESP_LOGI(TAG, "NVS initialized");
+    
+    // Initialize provisioning state machine
+    provisioning_state_init();
+    
+    // Register state change callback
+    provisioning_state_register_callback(state_change_handler);
+    
+    // Initialize WiFi manager
+    ret = wifi_manager_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi manager");
+        return;
+    }
+    
+    // Check if already provisioned
+    char stored_ssid[33] = {0};
+    char stored_password[64] = {0};
+    
+    if (wifi_manager_get_stored_credentials(stored_ssid, stored_password) == ESP_OK) {
+        ESP_LOGI(TAG, "Found stored credentials, attempting to connect to: %s", stored_ssid);
+        
+        ret = wifi_manager_connect(stored_ssid, stored_password);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Connecting to stored WiFi network...");
+            
+            // Wait for connection (with timeout)
+            int wait_time = 0;
+            while (!wifi_manager_is_connected() && wait_time < 30) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                wait_time++;
+            }
+            
+            if (wifi_manager_is_connected()) {
+                ESP_LOGI(TAG, "Successfully connected to stored WiFi network");
+                provisioning_state_set(PROV_STATE_PROVISIONED, STATUS_SUCCESS, "Connected using stored credentials");
+                
+                // No need to start BLE provisioning
+                ESP_LOGI(TAG, "Device is provisioned and connected. BLE provisioning not started.");
+                return;
+            } else {
+                ESP_LOGW(TAG, "Failed to connect with stored credentials, starting BLE provisioning");
+            }
+        }
+        
+        // Clear sensitive data
+        memset(stored_password, 0, sizeof(stored_password));
+    } else {
+        ESP_LOGI(TAG, "No stored credentials found");
+    }
+    
+    // Initialize BLE provisioning
+    ESP_LOGI(TAG, "Starting BLE provisioning...");
+    ret = ble_provisioning_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize BLE provisioning");
+        return;
+    }
+    
+    // Start BLE advertising
+    ret = ble_provisioning_start_advertising();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start BLE advertising");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "BLE provisioning started successfully");
+    ESP_LOGI(TAG, "Device name: %s", BLE_DEVICE_NAME);
+    ESP_LOGI(TAG, "Waiting for provisioning app to connect...");
+    
+    // Main loop - monitor provisioning status
+    while (1) {
+        provisioning_state_t current_state = provisioning_state_get();
+        
+        // If provisioned successfully, we can optionally stop BLE
+        if (current_state == PROV_STATE_PROVISIONED) {
+            ESP_LOGI(TAG, "Provisioning completed successfully!");
+            
+            // Wait a bit to ensure final notifications are sent
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            
+            // Stop BLE to save power
+            ESP_LOGI(TAG, "Stopping BLE provisioning service...");
+            ble_provisioning_deinit();
+            
+            ESP_LOGI(TAG, "Device is now fully provisioned and connected to WiFi");
+            break;
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    
+    // Device is now provisioned - continue with normal operation
+    ESP_LOGI(TAG, "Entering normal operation mode");
+    
+    // Here you can add your main application logic
+    while (1) {
+        // Check WiFi connection status periodically
+        if (!wifi_manager_is_connected()) {
+            ESP_LOGW(TAG, "WiFi connection lost, attempting to reconnect...");
+            wifi_manager_connect(stored_ssid, stored_password);
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10000)); // Check every 10 seconds
+    }
+}
+
+/**
+ * @brief Handle state changes and send BLE notifications
+ */
+static void state_change_handler(provisioning_state_t state, provisioning_status_code_t status, const char* message)
+{
+    ESP_LOGI(TAG, "State changed: %s | Status: %s | Message: %s",
+             provisioning_state_to_string(state),
+             provisioning_status_to_string(status),
+             message ? message : "N/A");
+    
+    // Send state notification if BLE client is connected
+    if (ble_provisioning_is_connected()) {
+        // Map internal states to app states (0=AWAITING, 1=PROVISIONING, 2=SUCCESS, 3=FAILED)
+        uint8_t app_state = 0; // AWAITING
+        
+        switch (state) {
+            case PROV_STATE_IDLE:
+            case PROV_STATE_BLE_CONNECTED:
+            case PROV_STATE_CREDENTIALS_RECEIVED:
+                app_state = 0; // AWAITING
+                break;
+                
+            case PROV_STATE_WIFI_CONNECTING:
+                app_state = 1; // PROVISIONING
+                break;
+                
+            case PROV_STATE_WIFI_CONNECTED:
+            case PROV_STATE_PROVISIONED:
+                app_state = 2; // SUCCESS
+                break;
+                
+            case PROV_STATE_WIFI_FAILED:
+            case PROV_STATE_ERROR:
+                app_state = 3; // FAILED
+                break;
+                
+            default:
+                app_state = 0;
+                break;
+        }
+        
+        ble_provisioning_send_state(app_state);
+        
+        // Send status message as JSON or plain text
+        if (message) {
+            ble_provisioning_send_status(message);
+        }
+    }
+}

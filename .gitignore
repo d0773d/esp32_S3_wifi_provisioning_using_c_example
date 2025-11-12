@@ -1,0 +1,32 @@
+// .gitignore for ESP-IDF project
+
+# Build artifacts
+build/
+sdkconfig
+sdkconfig.old
+*.bin
+*.elf
+*.map
+
+# Dependencies
+dependencies.lock
+managed_components/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials (never commit real credentials!)
+credentials.json
+secrets.h

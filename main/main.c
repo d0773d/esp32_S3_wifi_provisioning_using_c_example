@@ -6,11 +6,14 @@
 #include "ble_provisioning.h"
 #include "wifi_manager.h"
 #include "provisioning_state.h"
+#include "security.h"
+#include "reset_button.h"
 
 static const char *TAG = "MAIN";
 
-// Forward declaration
+// Forward declarations
 static void state_change_handler(provisioning_state_t state, provisioning_status_code_t status, const char* message);
+static void reset_button_handler(reset_button_event_t event, uint32_t press_duration_ms);
 
 /**
  * @brief Main application entry point
@@ -21,15 +24,18 @@ void app_main(void)
     ESP_LOGI(TAG, "ESP32-S3 WiFi BLE Provisioning");
     ESP_LOGI(TAG, "=================================");
     
-    // Initialize NVS (required for WiFi and BLE)
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS partition needs erasing, erasing...");
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
+    // Initialize security features (NVS encryption with eFuse protection)
+    esp_err_t ret = security_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Security initialization failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Device will continue but credentials may not be secure!");
     }
-    ESP_ERROR_CHECK(ret);
-    ESP_LOGI(TAG, "NVS initialized");
+    
+    // Initialize reset button (GPIO0 - BOOT button)
+    ret = reset_button_init(RESET_BUTTON_GPIO, reset_button_handler);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize reset button: %s", esp_err_to_name(ret));
+    }
     
     // Initialize provisioning state machine
     provisioning_state_init();
@@ -183,5 +189,59 @@ static void state_change_handler(provisioning_state_t state, provisioning_status
         if (message) {
             ble_provisioning_send_status(message);
         }
+    }
+}
+
+/**
+ * @brief Handle reset button events
+ */
+static void reset_button_handler(reset_button_event_t event, uint32_t press_duration_ms)
+{
+    switch (event) {
+        case RESET_BUTTON_EVENT_SHORT_PRESS:
+            ESP_LOGW(TAG, "====================================");
+            ESP_LOGW(TAG, "SHORT PRESS DETECTED (%lu ms)", (unsigned long)press_duration_ms);
+            ESP_LOGW(TAG, "Clearing WiFi credentials...");
+            ESP_LOGW(TAG, "====================================");
+            
+            // Clear WiFi credentials
+            esp_err_t ret = wifi_manager_clear_credentials();
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "WiFi credentials cleared successfully");
+                ESP_LOGI(TAG, "Restarting device to begin reprovisioning...");
+                
+                // Disconnect WiFi first
+                wifi_manager_disconnect();
+                
+                // Wait a moment then restart
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_restart();
+            } else {
+                ESP_LOGE(TAG, "Failed to clear credentials: %s", esp_err_to_name(ret));
+            }
+            break;
+            
+        case RESET_BUTTON_EVENT_LONG_PRESS:
+            ESP_LOGW(TAG, "====================================");
+            ESP_LOGW(TAG, "LONG PRESS DETECTED (%lu ms)", (unsigned long)press_duration_ms);
+            ESP_LOGW(TAG, "Performing FACTORY RESET...");
+            ESP_LOGW(TAG, "====================================");
+            
+            // Erase entire NVS partition (factory reset)
+            ret = nvs_flash_erase();
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "NVS erased successfully (factory reset)");
+                ESP_LOGI(TAG, "Restarting device...");
+                
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_restart();
+            } else {
+                ESP_LOGE(TAG, "Failed to erase NVS: %s", esp_err_to_name(ret));
+            }
+            break;
+            
+        default:
+            ESP_LOGW(TAG, "Unknown button event: %d", event);
+            break;
     }
 }

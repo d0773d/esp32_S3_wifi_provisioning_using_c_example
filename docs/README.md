@@ -1,133 +1,68 @@
-# ESP32-S3 WiFi Provisioning over Secure BLE# ESP32-S3 WiFi Provisioning over Secure BLE
+# ESP32-S3 WiFi Provisioning over Secure BLE
 
+This project implements WiFi provisioning for ESP32-S3 using a secure, bonded BLE connection. The device receives WiFi credentials via JSON over BLE, connects to the network, and saves the credentials to NVS upon successful connection. Real-time status updates are sent to the provisioning app via BLE notifications.
 
+## Features
 
-> **Note**: Full documentation has been moved to the [`docs/`](docs/) folder.This project implements WiFi provisioning for ESP32-S3 using a secure, bonded BLE connection. The device receives WiFi credentials via JSON over BLE, connects to the network, and saves the credentials to NVS upon successful connection. Real-time status updates are sent to the provisioning app via BLE notifications.
-
-
-
-## Quick Start## Features
-
-
-
-```powershell- ✅ **Secure BLE Communication**: Uses BLE bonding/pairing with encryption (MITM protection)
-
-# Build the project- ✅ **JSON-based Credentials**: Receives WiFi credentials in JSON format: `{"ssid":"network","password":"pass"}`
-
-idf.py build- ✅ **Real-time Notifications**: Sends provisioning status updates to mobile app via BLE notifications
-
+- ✅ **Secure BLE Communication**: Uses BLE bonding/pairing with encryption (MITM protection)
+- ✅ **JSON-based Credentials**: Receives WiFi credentials in JSON format: `{"ssid":"network","password":"pass"}`
+- ✅ **Real-time Notifications**: Sends provisioning status updates to mobile app via BLE notifications
 - ✅ **NVS Storage**: Saves WiFi credentials to Non-Volatile Storage after successful connection
-
-# Flash to ESP32-S3- ✅ **Auto-reconnect**: Automatically connects to stored WiFi on subsequent boots
-
-idf.py -p COM3 flash monitor- ✅ **Comprehensive Error Handling**: Detailed error codes for authentication failures, timeouts, etc.
-
-```- ✅ **State Machine**: Tracks provisioning progress through well-defined states
-
+- ✅ **Auto-reconnect**: Automatically connects to stored WiFi on subsequent boots
+- ✅ **Comprehensive Error Handling**: Detailed error codes for authentication failures, timeouts, etc.
+- ✅ **State Machine**: Tracks provisioning progress through well-defined states
 - ✅ **Power Efficient**: Disables BLE after successful provisioning
-
-## Project Structure
 
 ## Architecture
 
-```
+### Components
 
-esp32_S3/### Components
+1. **BLE Provisioning** (`ble_provisioning.c/h`)
+   - GATT server with custom service
+   - WiFi credentials characteristic (write)
+   - Provisioning status characteristic (notify)
+   - Secure bonding implementation
 
-├── main/                   # Application source code
+2. **WiFi Manager** (`wifi_manager.c/h`)
+   - WiFi connection handling
+   - Event-driven architecture
+   - NVS credential storage
+   - Connection retry logic
 
-│   ├── main.c             # Main application entry point1. **BLE Provisioning** (`ble_provisioning.c/h`)
+3. **Provisioning State Machine** (`provisioning_state.c/h`)
+   - State tracking and transitions
+   - Status code definitions
+   - Callback system for state changes
 
-│   ├── ble_provisioning.c # BLE GATT server implementation   - GATT server with custom service
-
-│   ├── wifi_manager.c     # WiFi connection and NVS storage   - WiFi credentials characteristic (write)
-
-│   └── provisioning_state.c # State machine   - Provisioning status characteristic (notify)
-
-├── docs/                   # Documentation   - Secure bonding implementation
-
-│   ├── README.md          # Complete project documentation
-
-│   ├── KOTLIN_INTEGRATION.md # Mobile app integration guide2. **WiFi Manager** (`wifi_manager.c/h`)
-
-│   └── UUID_MAPPING.md    # BLE UUID reference   - WiFi connection handling
-
-├── config/                 # Configuration files   - Event-driven architecture
-
-│   ├── sdkconfig.defaults # Default ESP-IDF configuration   - NVS credential storage
-
-│   └── partitions.csv     # Flash partition table   - Connection retry logic
-
-├── test/                   # Test files and examples
-
-│   ├── test_credentials.json3. **Provisioning State Machine** (`provisioning_state.c/h`)
-
-│   └── test_credentials_examples.txt   - State tracking and transitions
-
-└── build/                  # Build artifacts (generated)   - Status code definitions
-
-```   - Callback system for state changes
-
-
-
-## Features4. **Main Application** (`main.c`)
-
+4. **Main Application** (`main.c`)
    - System initialization
+   - Component orchestration
+   - Stored credential handling
 
-- ✅ Secure BLE Communication with bonding/pairing   - Component orchestration
+### BLE Service Structure
 
-- ✅ JSON-based WiFi credentials   - Stored credential handling
+**Service UUID**: `00467768-6228-2272-4663-277478268000`
 
-- ✅ Real-time status notifications
-
-- ✅ NVS credential storage### BLE Service Structure
-
-- ✅ Auto-reconnect on boot
-
-- ✅ Comprehensive error handling**Service UUID**: `00467768-6228-2272-4663-277478268000`
-
-
-
-## Documentation| Characteristic | UUID | Properties | Description |
-
+| Characteristic | UUID | Properties | Description |
 |----------------|------|------------|-------------|
+| State | `00467768-6228-2272-4663-277478268001` | Read | Current provisioning state |
+| WiFi Credentials | `00467768-6228-2272-4663-277478268002` | Write | Receives JSON with SSID and password |
+| Status | `00467768-6228-2272-4663-277478268003` | Read, Notify | Sends status updates to app |
 
-- **[Complete Guide](docs/README.md)** - Full project documentation, architecture, and usage| State | `00467768-6228-2272-4663-277478268001` | Read | Current provisioning state |
+### Provisioning States
 
-- **[Kotlin Integration](docs/KOTLIN_INTEGRATION.md)** - Android app development guide| WiFi Credentials | `00467768-6228-2272-4663-277478268002` | Write | Receives JSON with SSID and password |
-
-- **[UUID Mapping](docs/UUID_MAPPING.md)** - BLE service and characteristic reference| Status | `00467768-6228-2272-4663-277478268003` | Read, Notify | Sends status updates to app |
-
-
-
-## Device Information### Provisioning States
-
-
-
-- **Device Name**: `ESP32_WiFi_Prov`| State | Description |
-
-- **Service UUID**: `00467768-6228-2272-4663-277478268000`|-------|-------------|
-
-- **Security**: LE Secure Connections with MITM protection| `IDLE` | Waiting for BLE connection |
-
+| State | Description |
+|-------|-------------|
+| `IDLE` | Waiting for BLE connection |
 | `BLE_CONNECTED` | Client connected, waiting for credentials |
-
-## License| `CREDENTIALS_RECEIVED` | Valid credentials received |
-
+| `CREDENTIALS_RECEIVED` | Valid credentials received |
 | `WIFI_CONNECTING` | Attempting WiFi connection |
-
-This project is provided as-is for educational and commercial use.| `WIFI_CONNECTED` | Connected to WiFi, saving credentials |
-
+| `WIFI_CONNECTED` | Connected to WiFi, saving credentials |
 | `PROVISIONED` | Successfully provisioned |
-
----| `WIFI_FAILED` | WiFi connection failed |
-
+| `WIFI_FAILED` | WiFi connection failed |
 | `ERROR` | Error occurred during provisioning |
 
-**Version**: 1.0.0  
-
-**Date**: November 2025### Status Codes
-
+### Status Codes
 
 - `SUCCESS`: Operation successful
 - `ERROR_INVALID_JSON`: Malformed JSON data

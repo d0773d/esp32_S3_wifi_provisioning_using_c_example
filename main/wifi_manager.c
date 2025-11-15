@@ -29,6 +29,7 @@ static const char *TAG = "WIFI_MGR";
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_num = 0;
 static bool s_is_connected = false;
+static bool s_has_credentials_configured = false;
 
 // Store credentials temporarily before saving
 static char pending_ssid[33] = {0};
@@ -66,7 +67,10 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         ESP_LOGI(TAG, "WiFi station started, attempting to connect...");
-        esp_wifi_connect();
+        // Only connect if we have credentials configured
+        if (s_has_credentials_configured) {
+            esp_wifi_connect();
+        }
         
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t* disconn_event = (wifi_event_sta_disconnected_t*) event_data;
@@ -213,6 +217,9 @@ esp_err_t wifi_manager_init(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     
+    // Disable WiFi NVS storage (we manage credentials manually)
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    
     // Register event handlers
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
@@ -254,6 +261,9 @@ esp_err_t wifi_manager_connect(const char* ssid, const char* password)
     // Set configuration
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     
+    // Mark that we have credentials configured
+    s_has_credentials_configured = true;
+    
     // Start WiFi
     ESP_ERROR_CHECK(esp_wifi_start());
     
@@ -279,7 +289,11 @@ esp_err_t wifi_manager_get_stored_credentials(char* ssid, char* password)
     
     ret = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS handle: %s", esp_err_to_name(ret));
+        if (ret == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGI(TAG, "No stored WiFi credentials found (first boot or cleared)");
+        } else {
+            ESP_LOGE(TAG, "Failed to open NVS handle: %s", esp_err_to_name(ret));
+        }
         return ret;
     }
     
@@ -345,6 +359,9 @@ esp_err_t wifi_manager_clear_credentials(void)
     
     ret = nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
+    
+    // Clear the configured flag
+    s_has_credentials_configured = false;
     
     ESP_LOGI(TAG, "Credentials cleared successfully");
     return ret;

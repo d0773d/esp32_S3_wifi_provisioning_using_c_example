@@ -119,6 +119,50 @@ idf.py -p COM3 flash monitor
 
 Replace `COM3` with your actual serial port.
 
+## Optional Setup
+
+### PowerShell Profile for Simplified `idf.py` Usage (Windows)
+
+By default, you need to run `. $env:IDF_PATH\export.ps1` or the full export command before using `idf.py`. To avoid this, you can add a PowerShell function to your profile:
+
+#### Setup Steps:
+
+1. **Check if profile exists:**
+   ```powershell
+   Test-Path $PROFILE
+   ```
+
+2. **Create profile if it doesn't exist:**
+   ```powershell
+   New-Item -Path $PROFILE -Type File -Force
+   ```
+
+3. **Add the idf.py function:**
+   ```powershell
+   Add-Content -Path $PROFILE -Value "`n# ESP-IDF helper function`nfunction idf.py {`n    & C:\Espressif\frameworks\esp-idf-v5.5.1-2\export.ps1 | Out-Null`n    & python C:\Espressif\frameworks\esp-idf-v5.5.1-2\tools\idf.py @args`n}"
+   ```
+   
+   *Note: Adjust the ESP-IDF path if your installation is in a different location.*
+
+4. **Reload your profile:**
+   ```powershell
+   . $PROFILE
+   ```
+
+#### Benefits:
+- ✅ Use `idf.py` directly from any PowerShell window
+- ✅ No need to manually run export.ps1 each time
+- ✅ Automatically loads ESP-IDF environment when needed
+- ✅ Works in any directory
+
+#### Usage After Setup:
+```powershell
+# Now you can use idf.py directly:
+idf.py build
+idf.py -p COM3 flash monitor
+idf.py menuconfig
+```
+
 ## Usage
 
 ### First Boot (No Stored Credentials)

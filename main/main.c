@@ -8,12 +8,19 @@
 #include "provisioning_state.h"
 #include "security.h"
 #include "reset_button.h"
+#include "time_sync.h"
+#include "cloud_provisioning.h"
+#include "http_server.h"
+#include "api_key_manager.h"
+#include "mdns_service.h"
 
 static const char *TAG = "MAIN";
 
 // Forward declarations
 static void state_change_handler(provisioning_state_t state, provisioning_status_code_t status, const char* message);
 static void reset_button_handler(reset_button_event_t event, uint32_t press_duration_ms);
+static void time_sync_handler(bool synced, struct tm *current_time);
+static void cloud_prov_handler(bool success, const char *message);
 
 /**
  * @brief Main application entry point
@@ -72,6 +79,55 @@ void app_main(void)
                 ESP_LOGI(TAG, "Successfully connected to stored WiFi network");
                 provisioning_state_set(PROV_STATE_PROVISIONED, STATUS_SUCCESS, "Connected using stored credentials");
                 
+                // Initialize NTP time synchronization
+                ESP_LOGI(TAG, "Initializing NTP time synchronization...");
+                ret = time_sync_init(NULL, time_sync_handler); // NULL = UTC timezone
+                if (ret != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to initialize time sync: %s", esp_err_to_name(ret));
+                }
+                
+                // Wait for time sync (required for HTTPS certificate validation)
+                ESP_LOGI(TAG, "Waiting for time synchronization...");
+                int sync_wait = 0;
+                while (!time_sync_is_synced() && sync_wait < 10) {
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    sync_wait++;
+                }
+                
+                // Initialize API key manager
+                ESP_LOGI(TAG, "Initializing API key manager...");
+                api_key_manager_init();
+                
+                // Initialize cloud provisioning
+                ESP_LOGI(TAG, "Initializing cloud provisioning...");
+                cloud_prov_init(cloud_prov_handler);
+                
+                // Start automatic provisioning (get certificates)
+                ESP_LOGI(TAG, "Starting cloud provisioning...");
+                ret = cloud_prov_provision_device();
+                if (ret == ESP_OK) {
+                    // Initialize mDNS for local network discovery
+                    ESP_LOGI(TAG, "Initializing mDNS service...");
+                    ret = mdns_service_init("kc", "KannaCloud Device");
+                    if (ret == ESP_OK) {
+                        mdns_service_add_https(443);
+                    } else {
+                        ESP_LOGW(TAG, "mDNS initialization failed, device accessible by IP only");
+                    }
+                    
+                    // Start HTTPS server with downloaded certificates
+                    ESP_LOGI(TAG, "Starting HTTPS dashboard server...");
+                    ret = http_server_start();
+                    if (ret == ESP_OK) {
+                        ESP_LOGI(TAG, "✓ HTTPS dashboard is ready!");
+                        ESP_LOGI(TAG, "✓ Access at: https://kc.local");
+                    } else {
+                        ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(ret));
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Cloud provisioning failed, dashboard not available");
+                }
+                
                 // No need to start BLE provisioning
                 ESP_LOGI(TAG, "Device is provisioned and connected. BLE provisioning not started.");
                 return;
@@ -112,6 +168,55 @@ void app_main(void)
         // If provisioned successfully, we can optionally stop BLE
         if (current_state == PROV_STATE_PROVISIONED) {
             ESP_LOGI(TAG, "Provisioning completed successfully!");
+            
+            // Initialize NTP time synchronization
+            ESP_LOGI(TAG, "Initializing NTP time synchronization...");
+            ret = time_sync_init(NULL, time_sync_handler); // NULL = UTC timezone
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to initialize time sync: %s", esp_err_to_name(ret));
+            }
+            
+            // Wait for time sync (required for HTTPS certificate validation)
+            ESP_LOGI(TAG, "Waiting for time synchronization...");
+            int sync_wait = 0;
+            while (!time_sync_is_synced() && sync_wait < 10) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                sync_wait++;
+            }
+            
+            // Initialize API key manager
+            ESP_LOGI(TAG, "Initializing API key manager...");
+            api_key_manager_init();
+            
+            // Initialize cloud provisioning
+            ESP_LOGI(TAG, "Initializing cloud provisioning...");
+            cloud_prov_init(cloud_prov_handler);
+            
+            // Start automatic provisioning (get certificates)
+            ESP_LOGI(TAG, "Starting cloud provisioning...");
+            ret = cloud_prov_provision_device();
+            if (ret == ESP_OK) {
+                // Initialize mDNS for local network discovery
+                ESP_LOGI(TAG, "Initializing mDNS service...");
+                ret = mdns_service_init("kc", "KannaCloud Device");
+                if (ret == ESP_OK) {
+                    mdns_service_add_https(443);
+                } else {
+                    ESP_LOGW(TAG, "mDNS initialization failed, device accessible by IP only");
+                }
+                
+                // Start HTTPS server with downloaded certificates
+                ESP_LOGI(TAG, "Starting HTTPS dashboard server...");
+                ret = http_server_start();
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "✓ HTTPS dashboard is ready!");
+                    ESP_LOGI(TAG, "✓ Access at: https://kc.local");
+                } else {
+                    ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(ret));
+                }
+            } else {
+                ESP_LOGW(TAG, "Cloud provisioning failed, dashboard not available");
+            }
             
             // Wait a bit to ensure final notifications are sent
             vTaskDelay(pdMS_TO_TICKS(2000));
@@ -243,5 +348,40 @@ static void reset_button_handler(reset_button_event_t event, uint32_t press_dura
         default:
             ESP_LOGW(TAG, "Unknown button event: %d", event);
             break;
+    }
+}
+
+/**
+ * @brief Handle time synchronization events
+ */
+static void time_sync_handler(bool synced, struct tm *current_time)
+{
+    if (synced && current_time != NULL) {
+        char time_str[64];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", current_time);
+        ESP_LOGI(TAG, "====================================");
+        ESP_LOGI(TAG, "Time Synchronized Successfully!");
+        ESP_LOGI(TAG, "Current time: %s UTC", time_str);
+        ESP_LOGI(TAG, "====================================");
+    } else {
+        ESP_LOGW(TAG, "Time synchronization failed");
+    }
+}
+
+/**
+ * @brief Handle cloud provisioning events
+ */
+static void cloud_prov_handler(bool success, const char *message)
+{
+    if (success) {
+        ESP_LOGI(TAG, "====================================");
+        ESP_LOGI(TAG, "Cloud Provisioning Successful!");
+        ESP_LOGI(TAG, "Message: %s", message ? message : "N/A");
+        ESP_LOGI(TAG, "====================================");
+    } else {
+        ESP_LOGW(TAG, "====================================");
+        ESP_LOGW(TAG, "Cloud Provisioning Failed");
+        ESP_LOGW(TAG, "Error: %s", message ? message : "Unknown");
+        ESP_LOGW(TAG, "====================================");
     }
 }

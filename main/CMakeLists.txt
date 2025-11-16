@@ -4,5 +4,10 @@ idf_component_register(SRCS "main.c"
                              "provisioning_state.c"
                              "security.c"
                              "reset_button.c"
+                             "time_sync.c"
+                             "cloud_provisioning.c"
+                             "http_server.c"
+                             "api_key_manager.c"
+                             "mdns_service.c"
                        INCLUDE_DIRS "."
-                       REQUIRES nvs_flash bt esp_wifi json esp_partition bootloader_support efuse driver)
+                       REQUIRES nvs_flash bt esp_wifi json esp_partition bootloader_support efuse driver esp_http_client esp_http_server esp_https_server mdns)

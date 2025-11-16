@@ -1,0 +1,106 @@
+/**
+ * @file cloud_provisioning.h
+ * @brief Cloud provisioning and certificate management
+ * 
+ * Handles automatic device provisioning with ssl.kannacloud.com:
+ * - Generates device-specific SSL certificates
+ * - Downloads and stores certificates
+ * - Registers device with cloud server
+ */
+
+#ifndef CLOUD_PROVISIONING_H
+#define CLOUD_PROVISIONING_H
+
+#include "esp_err.h"
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Configuration
+#define CLOUD_PROV_SSL_MANAGER_URL "https://ssl.kannacloud.com"
+#define CLOUD_PROV_API_KEY "sk_sgpGxk29Bl4rDDoNqIzrD9tdHdwD7KcieteAoSEOH78"  // TODO: Replace with your actual API key
+
+// Device certificate info
+#define CLOUD_PROV_MAX_CERT_SIZE (4096)
+#define CLOUD_PROV_MAX_KEY_SIZE (4096)
+
+/**
+ * @brief Provisioning status callback
+ * 
+ * @param success true if provisioning succeeded, false otherwise
+ * @param message Status message or error description
+ */
+typedef void (*cloud_prov_callback_t)(bool success, const char *message);
+
+/**
+ * @brief Initialize cloud provisioning module
+ * 
+ * Must be called after WiFi connection and time sync.
+ * 
+ * @param callback Optional callback for provisioning status updates
+ * @return ESP_OK on success
+ */
+esp_err_t cloud_prov_init(cloud_prov_callback_t callback);
+
+/**
+ * @brief Start automatic device provisioning
+ * 
+ * This will:
+ * 1. Check if device already has certificates
+ * 2. If not, request new certificates from ssl.kannacloud.com
+ * 3. Download private key and certificate
+ * 4. Store them in NVS for future use
+ * 5. Trigger callback with status
+ * 
+ * @return ESP_OK if provisioning started, error code otherwise
+ */
+esp_err_t cloud_prov_provision_device(void);
+
+/**
+ * @brief Check if device has valid certificates
+ * 
+ * @return true if certificates exist and are valid
+ */
+bool cloud_prov_has_certificates(void);
+
+/**
+ * @brief Get device certificate
+ * 
+ * @param cert_out Buffer to store certificate (must be CLOUD_PROV_MAX_CERT_SIZE bytes)
+ * @param cert_len Pointer to store actual certificate length
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if no certificate
+ */
+esp_err_t cloud_prov_get_certificate(char *cert_out, size_t *cert_len);
+
+/**
+ * @brief Get device private key
+ * 
+ * @param key_out Buffer to store private key (must be CLOUD_PROV_MAX_KEY_SIZE bytes)
+ * @param key_len Pointer to store actual key length
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if no key
+ */
+esp_err_t cloud_prov_get_private_key(char *key_out, size_t *key_len);
+
+/**
+ * @brief Get device unique ID (used as Common Name in cert)
+ * 
+ * @param id_out Buffer to store device ID
+ * @param id_len Size of buffer
+ * @return ESP_OK on success
+ */
+esp_err_t cloud_prov_get_device_id(char *id_out, size_t id_len);
+
+/**
+ * @brief Clear stored certificates (force re-provisioning)
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t cloud_prov_clear_certificates(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // CLOUD_PROVISIONING_H

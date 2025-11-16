@@ -103,16 +103,7 @@ static void reset_button_event_handler_task(void* arg)
  */
 static void reset_button_monitor_task(void* arg)
 {
-    static int debug_counter = 0;
-    
     while (1) {
-        // Debug: Print GPIO state every 50 iterations (5 seconds)
-        if (debug_counter++ >= 50) {
-            int level = gpio_get_level(button_gpio);
-            ESP_LOGI(TAG, "GPIO%d state: %d (0=pressed, 1=released)", button_gpio, level);
-            debug_counter = 0;
-        }
-        
         if (button_pressed && !event_fired) {
             int64_t now = esp_timer_get_time();
             uint32_t press_duration_ms = (now - button_press_start_time) / 1000;

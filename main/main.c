@@ -13,6 +13,7 @@
 #include "http_server.h"
 #include "api_key_manager.h"
 #include "mdns_service.h"
+#include "mqtt_telemetry.h"
 
 static const char *TAG = "MAIN";
 
@@ -124,6 +125,25 @@ void app_main(void)
                     } else {
                         ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(ret));
                     }
+                    
+                // Initialize and start MQTT client for telemetry
+                ESP_LOGI(TAG, "Initializing MQTT client...");
+                const char *mqtt_broker = "mqtt://mqtt.kannacloud.com:1883";
+                const char *mqtt_username = "sensor01";
+                const char *mqtt_password = "xkKKYQWxiT83Ni3";
+                ret = mqtt_client_init(mqtt_broker, mqtt_username, mqtt_password);
+                    if (ret == ESP_OK) {
+                        ret = mqtt_client_start();
+                        if (ret == ESP_OK) {
+                            ESP_LOGI(TAG, "✓ MQTT telemetry enabled");
+                            // Set telemetry interval to 15 seconds for testing
+                            mqtt_set_telemetry_interval(15);
+                        } else {
+                            ESP_LOGW(TAG, "Failed to start MQTT client: %s", esp_err_to_name(ret));
+                        }
+                    } else {
+                        ESP_LOGW(TAG, "Failed to initialize MQTT client: %s", esp_err_to_name(ret));
+                    }
                 } else {
                     ESP_LOGW(TAG, "Cloud provisioning failed, dashboard not available");
                 }
@@ -213,6 +233,25 @@ void app_main(void)
                     ESP_LOGI(TAG, "✓ Access at: https://kc.local");
                 } else {
                     ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(ret));
+                }
+                
+                // Initialize and start MQTT client for telemetry
+                ESP_LOGI(TAG, "Initializing MQTT client...");
+                const char *mqtt_broker = "mqtt://mqtt.kannacloud.com:1883";
+                const char *mqtt_username = "sensor01";
+                const char *mqtt_password = "xkKKYQWxiT83Ni3";
+                ret = mqtt_client_init(mqtt_broker, mqtt_username, mqtt_password);
+                if (ret == ESP_OK) {
+                    ret = mqtt_client_start();
+                    if (ret == ESP_OK) {
+                        ESP_LOGI(TAG, "✓ MQTT telemetry enabled");
+                        // Set telemetry interval to 15 seconds for testing
+                        mqtt_set_telemetry_interval(15);
+                    } else {
+                        ESP_LOGW(TAG, "Failed to start MQTT client: %s", esp_err_to_name(ret));
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Failed to initialize MQTT client: %s", esp_err_to_name(ret));
                 }
             } else {
                 ESP_LOGW(TAG, "Cloud provisioning failed, dashboard not available");

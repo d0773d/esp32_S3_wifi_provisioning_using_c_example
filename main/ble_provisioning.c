@@ -561,7 +561,7 @@ esp_err_t ble_provisioning_init(void)
     }
     
     // Configure security
-    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;
+    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_BOND; // Bonding without MITM (prevents double Android pairing notification)
     esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE; // Just Works pairing
     uint8_t key_size = 16;
     uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
@@ -629,17 +629,34 @@ esp_err_t ble_provisioning_deinit(void)
     
     // Stop advertising
     esp_ble_gap_stop_advertising();
+    ESP_LOGI(TAG, "Advertising stopped");
     
-    // Disconnect if connected
-    if (is_connected) {
-        esp_ble_gap_disconnect(NULL);
+    // Give time for any pending operations to complete
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Disable and deinitialize Bluedroid stack
+    esp_err_t ret = esp_bluedroid_disable();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to disable Bluedroid: %s", esp_err_to_name(ret));
     }
     
-    // Disable and deinitialize
-    esp_bluedroid_disable();
-    esp_bluedroid_deinit();
-    esp_bt_controller_disable();
-    esp_bt_controller_deinit();
+    ret = esp_bluedroid_deinit();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to deinit Bluedroid: %s", esp_err_to_name(ret));
+    }
+    
+    // Disable and deinitialize BT controller
+    ret = esp_bt_controller_disable();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to disable BT controller: %s", esp_err_to_name(ret));
+    }
+    
+    ret = esp_bt_controller_deinit();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to deinit BT controller: %s", esp_err_to_name(ret));
+    }
+    
+    ESP_LOGI(TAG, "BLE provisioning deinitialized successfully");
     
     return ESP_OK;
 }

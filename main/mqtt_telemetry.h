@@ -1,0 +1,155 @@
+/**
+ * @file mqtt_telemetry.h
+ * @brief MQTT telemetry client for cloud data streaming
+ */
+
+#ifndef MQTT_TELEMETRY_H
+#define MQTT_TELEMETRY_H
+
+#include "esp_err.h"
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief MQTT connection state
+ */
+typedef enum {
+    MQTT_STATE_DISCONNECTED,
+    MQTT_STATE_CONNECTING,
+    MQTT_STATE_CONNECTED,
+    MQTT_STATE_ERROR
+} mqtt_state_t;
+
+/**
+ * @brief Telemetry data structure
+ */
+typedef struct {
+    uint32_t uptime_sec;          // Device uptime in seconds
+    uint32_t free_heap;           // Free heap memory in bytes
+    int8_t rssi;                  // WiFi signal strength in dBm
+    float cpu_temp;               // CPU temperature (if available)
+    uint32_t wifi_reconnects;     // Number of WiFi reconnections
+    uint32_t mqtt_reconnects;     // Number of MQTT reconnections
+} telemetry_data_t;
+
+/**
+ * @brief Initialize MQTT client
+ * 
+ * Connects to MQTT broker specified in menuconfig
+ * 
+ * @param broker_uri MQTT broker URI (e.g., "mqtt://broker.example.com:1883" or "mqtts://broker.example.com:8883")
+ * @param username MQTT username (NULL if no authentication required)
+ * @param password MQTT password (NULL if no authentication required)
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_client_init(const char *broker_uri, const char *username, const char *password);
+
+/**
+ * @brief Start MQTT client and connect to broker
+ * 
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_client_start(void);
+
+/**
+ * @brief Stop MQTT client and disconnect
+ * 
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_client_stop(void);
+
+/**
+ * @brief Deinitialize MQTT client and free resources
+ * 
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_client_deinit(void);
+
+/**
+ * @brief Check if MQTT client is connected
+ * 
+ * @return true if connected, false otherwise
+ */
+bool mqtt_client_is_connected(void);
+
+/**
+ * @brief Get current MQTT connection state
+ * 
+ * @return Current connection state
+ */
+mqtt_state_t mqtt_client_get_state(void);
+
+/**
+ * @brief Publish telemetry data to cloud
+ * 
+ * Publishes to topic: devices/{device_id}/telemetry
+ * 
+ * @param data Telemetry data structure
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_publish_telemetry(const telemetry_data_t *data);
+
+/**
+ * @brief Publish device status to cloud
+ * 
+ * Publishes to topic: devices/{device_id}/status
+ * 
+ * @param status Status message (e.g., "online", "offline", "provisioning")
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_publish_status(const char *status);
+
+/**
+ * @brief Publish custom JSON message
+ * 
+ * @param topic MQTT topic
+ * @param json_data JSON string to publish
+ * @param qos Quality of Service (0, 1, or 2)
+ * @param retain Retain flag
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_publish_json(const char *topic, const char *json_data, int qos, bool retain);
+
+/**
+ * @brief Subscribe to a topic
+ * 
+ * @param topic MQTT topic to subscribe
+ * @param qos Quality of Service (0, 1, or 2)
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_subscribe(const char *topic, int qos);
+
+/**
+ * @brief Unsubscribe from a topic
+ * 
+ * @param topic MQTT topic to unsubscribe
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_unsubscribe(const char *topic);
+
+/**
+ * @brief Set telemetry publishing interval
+ * 
+ * @param interval_sec Interval in seconds (0 to disable automatic publishing)
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_set_telemetry_interval(uint32_t interval_sec);
+
+/**
+ * @brief Get device ID for MQTT topics
+ * 
+ * @param device_id Buffer to store device ID
+ * @param size Buffer size
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_get_device_id(char *device_id, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // MQTT_TELEMETRY_H

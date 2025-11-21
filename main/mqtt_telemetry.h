@@ -25,7 +25,7 @@ typedef enum {
 } mqtt_state_t;
 
 /**
- * @brief Telemetry data structure
+ * @brief Telemetry data structure (legacy)
  */
 typedef struct {
     uint32_t uptime_sec;          // Device uptime in seconds
@@ -35,6 +35,27 @@ typedef struct {
     uint32_t wifi_reconnects;     // Number of WiFi reconnections
     uint32_t mqtt_reconnects;     // Number of MQTT reconnections
 } telemetry_data_t;
+
+/**
+ * @brief Sensor data structure for KannaCloud format
+ * All sensor fields are optional - set to NAN if not available
+ */
+typedef struct {
+    float temperature;    // Temperature in Celsius (optional)
+    float humidity;       // Relative humidity in % (optional)
+    float soil_moisture;  // Soil moisture in % (optional)
+    float light_level;    // Light level in lux or raw ADC (optional)
+} sensor_data_t;
+
+/**
+ * @brief KannaCloud telemetry message structure
+ */
+typedef struct {
+    char device_id[32];          // Device ID (required)
+    sensor_data_t sensors;       // Sensor readings (all optional)
+    float battery;               // Battery level in % (optional, use NAN if not available)
+    int8_t rssi;                 // WiFi signal strength in dBm (optional)
+} kannacloud_data_t;
 
 /**
  * @brief Initialize MQTT client
@@ -84,7 +105,7 @@ bool mqtt_client_is_connected(void);
 mqtt_state_t mqtt_client_get_state(void);
 
 /**
- * @brief Publish telemetry data to cloud
+ * @brief Publish telemetry data to cloud (legacy)
  * 
  * Publishes to topic: devices/{device_id}/telemetry
  * 
@@ -92,6 +113,17 @@ mqtt_state_t mqtt_client_get_state(void);
  * @return ESP_OK on success, error code otherwise
  */
 esp_err_t mqtt_publish_telemetry(const telemetry_data_t *data);
+
+/**
+ * @brief Publish sensor data to KannaCloud
+ * 
+ * Publishes to topic: kannacloud/sensor/{device_id}/data
+ * JSON format: {"device_id": "...", "sensors": {...}, "battery": ..., "rssi": ...}
+ * 
+ * @param data KannaCloud telemetry data structure
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mqtt_publish_kannacloud_data(const kannacloud_data_t *data);
 
 /**
  * @brief Publish device status to cloud

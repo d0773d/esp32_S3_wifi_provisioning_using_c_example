@@ -21,6 +21,7 @@ static const char *TAG = "CLOUD_PROV";
 #define NVS_KEY_CERT "device_cert"
 #define NVS_KEY_PRIVATE "device_key"
 #define NVS_KEY_CERT_ID "cert_id"
+#define NVS_KEY_MQTT_CA "mqtt_ca_cert"
 
 // Callback
 static cloud_prov_callback_t s_callback = NULL;
@@ -164,9 +165,117 @@ esp_err_t cloud_prov_clear_certificates(void)
     nvs_erase_key(nvs_handle, NVS_KEY_CERT);
     nvs_erase_key(nvs_handle, NVS_KEY_PRIVATE);
     nvs_erase_key(nvs_handle, NVS_KEY_CERT_ID);
+    nvs_erase_key(nvs_handle, NVS_KEY_MQTT_CA);
     
     err = nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
+    
+    return err;
+}
+
+esp_err_t cloud_prov_download_mqtt_ca_cert(void)
+{
+    // Check if certificate already exists
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open_from_partition(NVS_PARTITION, NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK) {
+        size_t required_size = 0;
+        err = nvs_get_str(nvs_handle, NVS_KEY_MQTT_CA, NULL, &required_size);
+        nvs_close(nvs_handle);
+        
+        if (err == ESP_OK && required_size > 0) {
+            ESP_LOGI(TAG, "MQTT CA certificate already exists (%zu bytes), skipping download", required_size);
+            return ESP_OK;
+        }
+    }
+    
+    ESP_LOGI(TAG, "Downloading MQTT CA certificate from sensors.kannacloud.com...");
+    
+    esp_http_client_config_t config = {
+        .url = "https://sensors.kannacloud.com/static/ca.crt",
+        .method = HTTP_METHOD_GET,
+        .event_handler = http_event_handler,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 10000,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize HTTP client");
+        return ESP_FAIL;
+    }
+    
+    // Reset response buffer
+    s_response_len = 0;
+    memset(s_response_buffer, 0, sizeof(s_response_buffer));
+    
+    err = esp_http_client_perform(client);
+    int status_code = esp_http_client_get_status_code(client);
+    
+    esp_http_client_cleanup(client);
+    
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    if (status_code != 200) {
+        ESP_LOGE(TAG, "Server returned status: %d", status_code);
+        return ESP_FAIL;
+    }
+    
+    if (s_response_len == 0 || s_response_len >= CLOUD_PROV_MAX_CERT_SIZE) {
+        ESP_LOGE(TAG, "Invalid certificate size: %zu bytes", s_response_len);
+        return ESP_FAIL;
+    }
+    
+    // Null-terminate the certificate
+    s_response_buffer[s_response_len] = '\0';
+    
+    ESP_LOGI(TAG, "Downloaded MQTT CA certificate (%zu bytes)", s_response_len);
+    
+    // Store in NVS
+    err = nvs_open_from_partition(NVS_PARTITION, NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS partition: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    err = nvs_set_str(nvs_handle, NVS_KEY_MQTT_CA, s_response_buffer);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs_handle);
+    }
+    
+    nvs_close(nvs_handle);
+    
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "MQTT CA certificate stored successfully");
+    } else {
+        ESP_LOGE(TAG, "Failed to store MQTT CA certificate: %s", esp_err_to_name(err));
+    }
+    
+    return err;
+}
+
+esp_err_t cloud_prov_get_mqtt_ca_cert(char *cert_out, size_t *cert_len)
+{
+    if (cert_out == NULL || cert_len == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open_from_partition(NVS_PARTITION, NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    
+    size_t required_size = CLOUD_PROV_MAX_CERT_SIZE;
+    err = nvs_get_str(nvs_handle, NVS_KEY_MQTT_CA, cert_out, &required_size);
+    nvs_close(nvs_handle);
+    
+    if (err == ESP_OK) {
+        *cert_len = strlen(cert_out);
+    }
     
     return err;
 }

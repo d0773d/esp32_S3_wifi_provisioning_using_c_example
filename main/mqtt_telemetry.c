@@ -11,21 +11,24 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_random.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mqtt_client.h" // ESP-IDF MQTT client
 #include <string.h>
 #include <sys/time.h>
+#include <math.h>
 
 static const char *TAG = "MQTT_CLIENT";
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static mqtt_state_t s_mqtt_state = MQTT_STATE_DISCONNECTED;
 static esp_timer_handle_t s_telemetry_timer = NULL;
-static uint32_t s_telemetry_interval_sec = 15; // Default: 15 seconds for testing
+static uint32_t s_telemetry_interval_sec = 60; // Default: 60 seconds for KannaCloud sensor data
 static uint32_t s_mqtt_reconnects = 0;
 static char s_device_id[32] = {0};
+static char s_mqtt_ca_cert[CLOUD_PROV_MAX_CERT_SIZE] = {0}; // Static buffer for CA certificate
 
 // Forward declarations
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
@@ -43,13 +46,14 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             ESP_LOGI(TAG, "✓ Connected to MQTT broker");
             s_mqtt_state = MQTT_STATE_CONNECTED;
             
-            // Subscribe to kannacloud/test topic
-            esp_mqtt_client_subscribe(s_mqtt_client, "kannacloud/test", 1);
-            ESP_LOGI(TAG, "Subscribed to: kannacloud/test");
+            // Subscribe to KannaCloud command topic for this device
+            char cmd_topic[128];
+            snprintf(cmd_topic, sizeof(cmd_topic), "kannacloud/sensor/%s/cmd", s_device_id);
+            esp_mqtt_client_subscribe(s_mqtt_client, cmd_topic, 1);
+            ESP_LOGI(TAG, "Subscribed to: %s", cmd_topic);
             
-            // Publish test message
-            esp_mqtt_client_publish(s_mqtt_client, "kannacloud/test", "Hello World!!!", 0, 1, 0);
-            ESP_LOGI(TAG, "Published test message: Hello World!!!");
+            // Publish initial connection status
+            ESP_LOGI(TAG, "Device ready to publish sensor data");
             break;
             
         case MQTT_EVENT_DISCONNECTED:
@@ -113,7 +117,40 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 }
 
 /**
- * @brief Telemetry timer callback - publishes test message periodically
+ * @brief Read sensor values (randomized for testing - replace with actual sensor drivers)
+ */
+static float read_temperature(void) {
+    // TODO: Implement actual temperature sensor reading (DHT22, BME280, etc.)
+    // Randomized between 15°C and 30°C for testing
+    return 15.0f + ((float)(esp_random() % 1500) / 100.0f);
+}
+
+static float read_humidity(void) {
+    // TODO: Implement actual humidity sensor reading
+    // Randomized between 40% and 80% for testing
+    return 40.0f + ((float)(esp_random() % 4000) / 100.0f);
+}
+
+static float read_soil_moisture(void) {
+    // TODO: Implement actual soil moisture sensor reading
+    // Randomized between 20% and 70% for testing
+    return 20.0f + ((float)(esp_random() % 5000) / 100.0f);
+}
+
+static float read_light_level(void) {
+    // TODO: Implement actual light sensor reading
+    // Randomized between 100 and 2000 lux for testing
+    return 100.0f + (float)(esp_random() % 1900);
+}
+
+static float read_battery_level(void) {
+    // TODO: Implement actual battery level reading
+    // Randomized between 60% and 100% for testing
+    return 60.0f + ((float)(esp_random() % 4000) / 100.0f);
+}
+
+/**
+ * @brief Telemetry timer callback - publishes KannaCloud sensor data periodically
  */
 static void telemetry_timer_callback(void *arg)
 {
@@ -121,12 +158,36 @@ static void telemetry_timer_callback(void *arg)
         return;
     }
     
-    // Publish "Hello World!!!" message
-    int msg_id = esp_mqtt_client_publish(s_mqtt_client, "kannacloud/test", "Hello World!!!", 0, 1, 0);
-    if (msg_id >= 0) {
-        ESP_LOGI(TAG, "Published: Hello World!!! (msg_id=%d)", msg_id);
+    // Prepare KannaCloud data structure
+    kannacloud_data_t data;
+    strncpy(data.device_id, s_device_id, sizeof(data.device_id) - 1);
+    data.device_id[sizeof(data.device_id) - 1] = '\0';
+    
+    // Read sensor values
+    data.sensors.temperature = read_temperature();
+    data.sensors.humidity = read_humidity();
+    data.sensors.soil_moisture = read_soil_moisture();
+    data.sensors.light_level = read_light_level();
+    
+    // Read system values
+    data.battery = read_battery_level();
+    
+    // Get WiFi RSSI
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        data.rssi = ap_info.rssi;
     } else {
-        ESP_LOGW(TAG, "Failed to publish Hello World message");
+        data.rssi = -100; // Default if unable to read
+    }
+    
+    // Publish the data
+    esp_err_t ret = mqtt_publish_kannacloud_data(&data);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Published sensor data: temp=%.1f°C, humidity=%.1f%%, soil=%.1f%%, light=%.0f, battery=%.0f%%, rssi=%ddBm",
+                 data.sensors.temperature, data.sensors.humidity, data.sensors.soil_moisture,
+                 data.sensors.light_level, data.battery, data.rssi);
+    } else {
+        ESP_LOGW(TAG, "Failed to publish sensor data");
     }
 }
 
@@ -147,6 +208,9 @@ esp_err_t mqtt_client_init(const char *broker_uri, const char *username, const c
         ESP_LOGI(TAG, "Username: %s", username);
     }
     
+    // Check if this is a secure connection (mqtts://)
+    bool is_secure = (strncmp(broker_uri, "mqtts://", 8) == 0);
+    
     // Configure MQTT client
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = broker_uri,
@@ -160,6 +224,48 @@ esp_err_t mqtt_client_init(const char *broker_uri, const char *username, const c
         .buffer.size = 2048,
         .buffer.out_size = 2048,
     };
+    
+    // Add TLS configuration for secure connections
+    if (is_secure) {
+        ESP_LOGI(TAG, "Configuring MQTTS with TLS encryption");
+        
+        // Load CA certificate from NVS into static buffer
+        size_t ca_cert_len = 0;
+        esp_err_t ret = cloud_prov_get_mqtt_ca_cert(s_mqtt_ca_cert, &ca_cert_len);
+        
+        if (ret == ESP_OK && ca_cert_len > 0) {
+            ESP_LOGI(TAG, "Loaded CA certificate for MQTTS (%zu bytes)", ca_cert_len);
+            
+            // Log first and last parts of certificate for verification
+            char preview_start[150];
+            char preview_end[150];
+            size_t preview_len = ca_cert_len < 149 ? ca_cert_len : 149;
+            memcpy(preview_start, s_mqtt_ca_cert, preview_len);
+            preview_start[preview_len] = '\0';
+            
+            if (ca_cert_len > 149) {
+                size_t end_offset = ca_cert_len - 100;
+                memcpy(preview_end, s_mqtt_ca_cert + end_offset, 100);
+                preview_end[100] = '\0';
+            }
+            
+            ESP_LOGI(TAG, "Certificate START: %s", preview_start);
+            if (ca_cert_len > 149) {
+                ESP_LOGI(TAG, "Certificate END: %s", preview_end);
+            }
+            ESP_LOGI(TAG, "Certificate null-terminated: %s", (s_mqtt_ca_cert[ca_cert_len] == '\0') ? "YES" : "NO");
+            
+            // The certificate must be null-terminated for mbedTLS
+            s_mqtt_ca_cert[ca_cert_len] = '\0';
+            
+            mqtt_cfg.broker.verification.certificate = s_mqtt_ca_cert;
+            mqtt_cfg.broker.verification.certificate_len = ca_cert_len + 1; // Include null terminator
+            ESP_LOGI(TAG, "✓ TLS encryption enabled with CA certificate verification");
+        } else {
+            ESP_LOGW(TAG, "CA certificate not found (%s), skipping verification", esp_err_to_name(ret));
+            mqtt_cfg.broker.verification.skip_cert_common_name_check = true;
+        }
+    }
     
     // Create MQTT client
     s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
@@ -326,6 +432,79 @@ esp_err_t mqtt_publish_telemetry(const telemetry_data_t *data)
     }
     
     ESP_LOGD(TAG, "Telemetry published (msg_id: %d)", msg_id);
+    return ESP_OK;
+}
+
+esp_err_t mqtt_publish_kannacloud_data(const kannacloud_data_t *data)
+{
+    if (s_mqtt_client == NULL || s_mqtt_state != MQTT_STATE_CONNECTED) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    if (data == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Create JSON payload following KannaCloud format
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    
+    // Add device_id (required)
+    cJSON_AddStringToObject(root, "device_id", data->device_id);
+    
+    // Add sensors object
+    cJSON *sensors = cJSON_CreateObject();
+    if (sensors == NULL) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
+    
+    // Add sensor values (only if not NAN)
+    if (!isnan(data->sensors.temperature)) {
+        cJSON_AddNumberToObject(sensors, "temperature", data->sensors.temperature);
+    }
+    if (!isnan(data->sensors.humidity)) {
+        cJSON_AddNumberToObject(sensors, "humidity", data->sensors.humidity);
+    }
+    if (!isnan(data->sensors.soil_moisture)) {
+        cJSON_AddNumberToObject(sensors, "soil_moisture", data->sensors.soil_moisture);
+    }
+    if (!isnan(data->sensors.light_level)) {
+        cJSON_AddNumberToObject(sensors, "light_level", data->sensors.light_level);
+    }
+    
+    cJSON_AddItemToObject(root, "sensors", sensors);
+    
+    // Add battery level (optional)
+    if (!isnan(data->battery)) {
+        cJSON_AddNumberToObject(root, "battery", data->battery);
+    }
+    
+    // Add RSSI
+    cJSON_AddNumberToObject(root, "rssi", data->rssi);
+    
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    
+    if (json_str == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    
+    // Publish to KannaCloud topic: kannacloud/sensor/{device_id}/data
+    char topic[128];
+    snprintf(topic, sizeof(topic), "kannacloud/sensor/%s/data", data->device_id);
+    
+    int msg_id = esp_mqtt_client_publish(s_mqtt_client, topic, json_str, 0, 1, 0); // QoS 1
+    free(json_str);
+    
+    if (msg_id < 0) {
+        ESP_LOGE(TAG, "Failed to publish KannaCloud data");
+        return ESP_FAIL;
+    }
+    
+    ESP_LOGD(TAG, "KannaCloud data published to %s (msg_id: %d)", topic, msg_id);
     return ESP_OK;
 }
 

@@ -107,6 +107,13 @@ void app_main(void)
                 ESP_LOGI(TAG, "Starting cloud provisioning...");
                 ret = cloud_prov_provision_device();
                 if (ret == ESP_OK) {
+                    // Download MQTT CA certificate for MQTTS
+                    ESP_LOGI(TAG, "Downloading MQTT CA certificate...");
+                    ret = cloud_prov_download_mqtt_ca_cert();
+                    if (ret != ESP_OK) {
+                        ESP_LOGW(TAG, "Failed to download MQTT CA certificate: %s", esp_err_to_name(ret));
+                    }
+                    
                     // Initialize mDNS for local network discovery
                     ESP_LOGI(TAG, "Initializing mDNS service...");
                     ret = mdns_service_init("kc", "KannaCloud Device");
@@ -126,9 +133,9 @@ void app_main(void)
                         ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(ret));
                     }
                     
-                // Initialize and start MQTT client for telemetry
+                // Initialize and start MQTT client for KannaCloud telemetry
                 ESP_LOGI(TAG, "Initializing MQTT client...");
-                const char *mqtt_broker = "mqtt://mqtt.kannacloud.com:1883";
+                const char *mqtt_broker = "mqtts://mqtt.kannacloud.com:8883";
                 const char *mqtt_username = "sensor01";
                 const char *mqtt_password = "xkKKYQWxiT83Ni3";
                 ret = mqtt_client_init(mqtt_broker, mqtt_username, mqtt_password);
@@ -136,8 +143,8 @@ void app_main(void)
                         ret = mqtt_client_start();
                         if (ret == ESP_OK) {
                             ESP_LOGI(TAG, "✓ MQTT telemetry enabled");
-                            // Set telemetry interval to 15 seconds for testing
-                            mqtt_set_telemetry_interval(15);
+                            // Set telemetry interval to 10 seconds for dashboard testing
+                            mqtt_set_telemetry_interval(10);
                         } else {
                             ESP_LOGW(TAG, "Failed to start MQTT client: %s", esp_err_to_name(ret));
                         }
@@ -216,6 +223,13 @@ void app_main(void)
             ESP_LOGI(TAG, "Starting cloud provisioning...");
             ret = cloud_prov_provision_device();
             if (ret == ESP_OK) {
+                // Download MQTT CA certificate for MQTTS
+                ESP_LOGI(TAG, "Downloading MQTT CA certificate...");
+                ret = cloud_prov_download_mqtt_ca_cert();
+                if (ret != ESP_OK) {
+                    ESP_LOGW(TAG, "Failed to download MQTT CA certificate: %s", esp_err_to_name(ret));
+                }
+                
                 // Initialize mDNS for local network discovery
                 ESP_LOGI(TAG, "Initializing mDNS service...");
                 ret = mdns_service_init("kc", "KannaCloud Device");
@@ -235,9 +249,9 @@ void app_main(void)
                     ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(ret));
                 }
                 
-                // Initialize and start MQTT client for telemetry
+                // Initialize and start MQTT client for KannaCloud telemetry
                 ESP_LOGI(TAG, "Initializing MQTT client...");
-                const char *mqtt_broker = "mqtt://mqtt.kannacloud.com:1883";
+                const char *mqtt_broker = "mqtts://mqtt.kannacloud.com:8883";
                 const char *mqtt_username = "sensor01";
                 const char *mqtt_password = "xkKKYQWxiT83Ni3";
                 ret = mqtt_client_init(mqtt_broker, mqtt_username, mqtt_password);
@@ -245,8 +259,8 @@ void app_main(void)
                     ret = mqtt_client_start();
                     if (ret == ESP_OK) {
                         ESP_LOGI(TAG, "✓ MQTT telemetry enabled");
-                        // Set telemetry interval to 15 seconds for testing
-                        mqtt_set_telemetry_interval(15);
+                        // Set telemetry interval to 10 seconds for dashboard testing
+                        mqtt_set_telemetry_interval(10);
                     } else {
                         ESP_LOGW(TAG, "Failed to start MQTT client: %s", esp_err_to_name(ret));
                     }

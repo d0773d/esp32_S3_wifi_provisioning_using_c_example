@@ -99,6 +99,25 @@ esp_err_t cloud_prov_get_device_id(char *id_out, size_t id_len);
  */
 esp_err_t cloud_prov_clear_certificates(void);
 
+/**
+ * @brief Download MQTT CA certificate from server
+ * 
+ * Downloads the CA certificate needed for MQTTS connection from
+ * https://sensors.kannacloud.com/static/ca.crt and stores it in NVS.
+ * 
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t cloud_prov_download_mqtt_ca_cert(void);
+
+/**
+ * @brief Get MQTT CA certificate
+ * 
+ * @param cert_out Buffer to store CA certificate (must be CLOUD_PROV_MAX_CERT_SIZE bytes)
+ * @param cert_len Pointer to store actual certificate length
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if no certificate
+ */
+esp_err_t cloud_prov_get_mqtt_ca_cert(char *cert_out, size_t *cert_len);
+
 #ifdef __cplusplus
 }
 #endif

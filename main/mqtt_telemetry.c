@@ -6,6 +6,7 @@
 #include "mqtt_telemetry.h"
 #include "cloud_provisioning.h"
 #include "wifi_manager.h"
+#include "sensor_manager.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -117,35 +118,44 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 }
 
 /**
- * @brief Read sensor values (randomized for testing - replace with actual sensor drivers)
+ * @brief Read sensor values using sensor_manager
+ * Non-static to allow access from http_server for dashboard display
  */
-static float read_temperature(void) {
-    // TODO: Implement actual temperature sensor reading (DHT22, BME280, etc.)
-    // Randomized between 15°C and 30°C for testing
+float read_temperature(void) {
+    float temp = 0.0f;
+    // Try to read from EZO-RTD sensor
+    if (sensor_manager_read_temperature(&temp) == ESP_OK) {
+        return temp;
+    }
+    // Fallback to randomized value if sensor not available
     return 15.0f + ((float)(esp_random() % 1500) / 100.0f);
 }
 
-static float read_humidity(void) {
-    // TODO: Implement actual humidity sensor reading
+float read_humidity(void) {
+    // No humidity sensor in current setup
     // Randomized between 40% and 80% for testing
     return 40.0f + ((float)(esp_random() % 4000) / 100.0f);
 }
 
-static float read_soil_moisture(void) {
-    // TODO: Implement actual soil moisture sensor reading
+float read_soil_moisture(void) {
+    // Could map to EC sensor if desired, for now randomized
     // Randomized between 20% and 70% for testing
     return 20.0f + ((float)(esp_random() % 5000) / 100.0f);
 }
 
-static float read_light_level(void) {
-    // TODO: Implement actual light sensor reading
+float read_light_level(void) {
+    // No light sensor in current setup
     // Randomized between 100 and 2000 lux for testing
     return 100.0f + (float)(esp_random() % 1900);
 }
 
-static float read_battery_level(void) {
-    // TODO: Implement actual battery level reading
-    // Randomized between 60% and 100% for testing
+float read_battery_level(void) {
+    float battery = 0.0f;
+    // Read from MAX17048 battery monitor
+    if (sensor_manager_read_battery_percentage(&battery) == ESP_OK) {
+        return battery;
+    }
+    // Fallback to randomized value if sensor not available
     return 60.0f + ((float)(esp_random() % 4000) / 100.0f);
 }
 

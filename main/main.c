@@ -14,6 +14,8 @@
 #include "api_key_manager.h"
 #include "mdns_service.h"
 #include "mqtt_telemetry.h"
+#include "i2c_scanner.h"
+#include "sensor_manager.h"
 
 static const char *TAG = "MAIN";
 
@@ -132,6 +134,26 @@ void app_main(void)
                     } else {
                         ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(ret));
                     }
+                
+                // Initialize and scan I2C bus for sensors
+                ESP_LOGI(TAG, "Initializing I2C scanner...");
+                ret = i2c_scanner_init();
+                if (ret == ESP_OK) {
+                    i2c_scanner_scan();
+                    
+                    // Initialize sensor manager for real sensor data
+                    ESP_LOGI(TAG, "Initializing sensor manager...");
+                    ret = sensor_manager_init();
+                    if (ret == ESP_OK) {
+                        ESP_LOGI(TAG, "✓ Sensors initialized: Battery=%s, EZO sensors=%d",
+                                 sensor_manager_has_battery_monitor() ? "YES" : "NO",
+                                 sensor_manager_get_ezo_count());
+                    } else {
+                        ESP_LOGW(TAG, "Failed to initialize sensors: %s", esp_err_to_name(ret));
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Failed to initialize I2C: %s", esp_err_to_name(ret));
+                }
                     
                 // Initialize and start MQTT client for KannaCloud telemetry
                 ESP_LOGI(TAG, "Initializing MQTT client...");

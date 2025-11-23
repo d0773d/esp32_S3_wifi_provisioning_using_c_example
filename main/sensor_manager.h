@@ -86,6 +86,14 @@ esp_err_t sensor_manager_read_do(float *dox);
 esp_err_t sensor_manager_read_orp(float *orp);
 
 /**
+ * @brief Read humidity from EZO-HUM sensor
+ * 
+ * @param humidity Pointer to store humidity value (%)
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t sensor_manager_read_humidity(float *humidity);
+
+/**
  * @brief Get number of detected EZO sensors
  * 
  * @return uint8_t Number of EZO sensors found
@@ -106,6 +114,17 @@ bool sensor_manager_has_battery_monitor(void);
  * @return Pointer to EZO sensor handle, NULL if invalid index
  */
 void* sensor_manager_get_ezo_sensor(uint8_t index);
+
+/**
+ * @brief Read all values from an EZO sensor by index
+ * 
+ * @param index Sensor index
+ * @param sensor_type Buffer to store sensor type (min 16 bytes)
+ * @param values Array to store readings (up to 4 values)
+ * @param count Pointer to store number of values read
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t sensor_manager_read_ezo_sensor(uint8_t index, char *sensor_type, float values[4], uint8_t *count);
 
 /**
  * @brief Rescan I2C bus and reinitialize all sensors

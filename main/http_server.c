@@ -30,6 +30,7 @@ extern float read_battery_level(void);
 #include "sensor_manager.h"
 #include "ezo_sensor.h"
 #include "max17048.h"
+#include "mqtt_telemetry.h"  // For MAX_SENSOR_VALUES
 
 // HTML dashboard content (embedded)
 static const char *HTML_DASHBOARD = 
@@ -188,18 +189,39 @@ static const char *HTML_DASHBOARD =
 
 "</div>"
 "<script>"
-"let chart; const maxDataPoints=20; const chartData={temp:[],humid:[],labels:[]};"
+"let chart; const maxDataPoints=20; const chartData={labels:[]};"
+"const sensorConfigs={RTD:{label:'Temperature',unit:'°C',color:'#ef4444',yAxisID:'y'},pH:{label:'pH',unit:'',color:'#8b5cf6',yAxisID:'y'},EC:{label:'Conductivity',unit:'µS',color:'#06b6d4',yAxisID:'y1'},HUM_0:{label:'Humidity',unit:'%',color:'#3b82f6',yAxisID:'y'},HUM_1:{label:'Temp(HUM)',unit:'°C',color:'#f97316',yAxisID:'y'},HUM_2:{label:'Dew Point',unit:'°C',color:'#a855f7',yAxisID:'y'}};"
 "function initChart(){"
 "const ctx=document.getElementById('sensorChart').getContext('2d');"
-"chart=new Chart(ctx,{type:'line',data:{labels:chartData.labels,datasets:["
-"{label:'Temperature (°C)',data:chartData.temp,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,0.1)',tension:0.4},"
-"{label:'Humidity (%)',data:chartData.humid,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,0.1)',tension:0.4}"
-"]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top'}},scales:{y:{beginAtZero:true}}}});"
+"chart=new Chart(ctx,{type:'line',data:{labels:chartData.labels,datasets:[]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top'}},scales:{y:{beginAtZero:false,title:{display:true,text:'Primary (°C, pH, %)'},position:'left'},y1:{beginAtZero:false,title:{display:true,text:'Secondary (µS)'},position:'right',grid:{drawOnChartArea:false}}}}});"
 "}"
-"function updateChart(temp,humid){"
+"function updateChart(sensors){"
 "const now=new Date().toLocaleTimeString();"
-"chartData.temp.push(temp); chartData.humid.push(humid); chartData.labels.push(now);"
-"if(chartData.temp.length>maxDataPoints){chartData.temp.shift(); chartData.humid.shift(); chartData.labels.shift();}"
+"chartData.labels.push(now);"
+"if(chartData.labels.length>maxDataPoints)chartData.labels.shift();"
+"for(const sensorType in sensors){"
+"const value=sensors[sensorType];"
+"if(Array.isArray(value)){"
+"for(let i=0;i<value.length;i++){"
+"const key=sensorType+'_'+i;"
+"if(!chartData[key]){"
+"chartData[key]=[];"
+"const cfg=sensorConfigs[key]||{label:sensorType+'['+i+']',unit:'',color:'#94a3b8',yAxisID:'y'};"
+"chart.data.datasets.push({label:cfg.label+(cfg.unit?' ('+cfg.unit+')':''),data:chartData[key],borderColor:cfg.color,backgroundColor:cfg.color+'20',tension:0.4,yAxisID:cfg.yAxisID});"
+"}"
+"chartData[key].push(value[i]);"
+"if(chartData[key].length>maxDataPoints)chartData[key].shift();"
+"}"
+"}else{"
+"if(!chartData[sensorType]){"
+"chartData[sensorType]=[];"
+"const cfg=sensorConfigs[sensorType]||{label:sensorType,unit:'',color:'#94a3b8',yAxisID:'y'};"
+"chart.data.datasets.push({label:cfg.label+(cfg.unit?' ('+cfg.unit+')':''),data:chartData[sensorType],borderColor:cfg.color,backgroundColor:cfg.color+'20',tension:0.4,yAxisID:cfg.yAxisID});"
+"}"
+"chartData[sensorType].push(value);"
+"if(chartData[sensorType].length>maxDataPoints)chartData[sensorType].shift();"
+"}"
+"}"
 "if(chart)chart.update();"
 "}"
 "async function loadStatus(){"
@@ -217,7 +239,7 @@ static const char *HTML_DASHBOARD =
 "document.getElementById('free-heap').textContent=heapKB+' KB';"
 "if(d.rssi){document.getElementById('wifi-rssi').textContent=d.rssi+' dBm';}"
 "if(d.cpu_usage){document.getElementById('cpu-usage').textContent=d.cpu_usage+'%';}"
-"if(d.temperature&&d.humidity){updateChart(d.temperature,d.humidity);}"
+"if(d.sensors){updateChart(d.sensors);}"
 "document.getElementById('status-dot').className='status-dot online';"
 "document.getElementById('status-text').textContent='Device Status: Online';"
 "}catch(e){console.error(e);"
@@ -343,12 +365,38 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     // TODO: Implement more accurate CPU monitoring
     cJSON_AddNumberToObject(root, "cpu_usage", 25);
     
-    // Sensor data for live charts
-    cJSON_AddNumberToObject(root, "temperature", read_temperature());
-    cJSON_AddNumberToObject(root, "humidity", read_humidity());
-    cJSON_AddNumberToObject(root, "soil_moisture", read_soil_moisture());
-    cJSON_AddNumberToObject(root, "light_level", read_light_level());
-    cJSON_AddNumberToObject(root, "battery_level", read_battery_level());
+    // Sensor data for live charts - dynamic format matching MQTT telemetry
+    cJSON *sensors = cJSON_CreateObject();
+    
+    // Read all EZO sensors dynamically
+    uint8_t ezo_count = sensor_manager_get_ezo_count();
+    for (uint8_t i = 0; i < ezo_count; i++) {
+        char sensor_type[16];
+        float values[MAX_SENSOR_VALUES];
+        uint8_t value_count = 0;
+        
+        if (sensor_manager_read_ezo_sensor(i, sensor_type, values, &value_count) == ESP_OK) {
+            if (value_count == 1) {
+                // Single value sensor - add as number
+                cJSON_AddNumberToObject(sensors, sensor_type, values[0]);
+            } else if (value_count > 1) {
+                // Multi-value sensor - add as array
+                cJSON *array = cJSON_CreateArray();
+                for (uint8_t j = 0; j < value_count; j++) {
+                    cJSON_AddItemToArray(array, cJSON_CreateNumber(values[j]));
+                }
+                cJSON_AddItemToObject(sensors, sensor_type, array);
+            }
+        }
+    }
+    
+    cJSON_AddItemToObject(root, "sensors", sensors);
+    
+    // Battery level
+    float battery = 0.0f;
+    if (sensor_manager_read_battery_percentage(&battery) == ESP_OK) {
+        cJSON_AddNumberToObject(root, "battery", (int)battery);
+    }
     
     // Send JSON response
     const char *json_str = cJSON_PrintUnformatted(root);

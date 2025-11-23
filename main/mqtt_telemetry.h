@@ -37,14 +37,29 @@ typedef struct {
 } telemetry_data_t;
 
 /**
+ * @brief Multi-value sensor reading
+ */
+#define MAX_SENSOR_VALUES 4
+typedef struct {
+    char sensor_type[16];  // Sensor type (RTD, pH, EC, HUM, etc.)
+    float values[MAX_SENSOR_VALUES];  // Up to 4 values from sensor
+    uint8_t value_count;   // Number of valid values
+    bool valid;            // Whether this sensor reading is valid
+} sensor_reading_t;
+
+/**
  * @brief Sensor data structure for KannaCloud format
- * All sensor fields are optional - set to NAN if not available
+ * All sensor fields are optional - set to 0 or NAN if not available
  */
 typedef struct {
     float temperature;    // Temperature in Celsius (optional)
     float humidity;       // Relative humidity in % (optional)
     float soil_moisture;  // Soil moisture in % (optional)
     float light_level;    // Light level in lux or raw ADC (optional)
+    float ph;             // pH value (optional)
+    float ec;             // Electrical conductivity in µS/cm (optional)
+    float dissolved_oxygen; // Dissolved oxygen in mg/L (optional)
+    float orp;            // Oxidation-reduction potential in mV (optional)
 } sensor_data_t;
 
 /**

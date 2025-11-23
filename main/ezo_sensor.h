@@ -26,6 +26,7 @@ extern "C" {
 #define EZO_TYPE_EC             "EC"    // Electrical conductivity
 #define EZO_TYPE_DO             "DO"    // Dissolved oxygen
 #define EZO_TYPE_ORP            "ORP"   // Oxidation-reduction potential
+#define EZO_TYPE_HUM            "HUM"   // Humidity
 
 // Timing constants (in milliseconds)
 #define EZO_SHORT_WAIT_MS       300     // Short delay for simple commands
@@ -122,11 +123,21 @@ esp_err_t ezo_sensor_send_command(ezo_sensor_t *sensor, const char *command,
 /**
  * @brief Read sensor value
  * 
- * @param sensor Pointer to EZO sensor handle
- * @param value Pointer to store the read value
+ * @param sensor Pointer to sensor handle
+ * @param value Pointer to store reading
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t ezo_sensor_read(ezo_sensor_t *sensor, float *value);
+
+/**
+ * @brief Read all sensor values (for multi-value sensors like HUM)
+ * 
+ * @param sensor Pointer to sensor handle
+ * @param values Array to store readings (up to 4 values)
+ * @param count Pointer to store number of values read
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_sensor_read_all(ezo_sensor_t *sensor, float values[4], uint8_t *count);
 
 /**
  * @brief Get sensor name
@@ -284,6 +295,115 @@ esp_err_t ezo_ph_get_extended_scale(ezo_sensor_t *sensor, bool *enabled);
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t ezo_ph_set_extended_scale(ezo_sensor_t *sensor, bool enabled);
+
+// Calibration functions
+/**
+ * @brief Calibrate pH sensor (mid-point, low, high, or clear)
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param point Calibration point: "mid", "low", "high", or "clear"
+ * @param value Calibration value (e.g., 7.00 for mid, 4.00 for low, 10.00 for high). Ignored for "clear".
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_ph_calibrate(ezo_sensor_t *sensor, const char *point, float value);
+
+/**
+ * @brief Calibrate RTD sensor (temperature calibration or clear)
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param temperature Temperature value for calibration, or -1000.0 to clear calibration
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_rtd_calibrate(ezo_sensor_t *sensor, float temperature);
+
+/**
+ * @brief Calibrate EC sensor (dry, single-point, low, high, or clear)
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param point Calibration point: "dry", "low", "high", or "clear"
+ * @param value Calibration value in µS (e.g., 12880 for low, 80000 for high). Use 0 for "dry" or "clear".
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_ec_calibrate(ezo_sensor_t *sensor, const char *point, uint32_t value);
+
+/**
+ * @brief Calibrate DO sensor (atmospheric or zero point calibration, or clear)
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param point Calibration point: "atm" (atmospheric), "0" (zero), or "clear"
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_do_calibrate(ezo_sensor_t *sensor, const char *point);
+
+/**
+ * @brief Calibrate ORP sensor (single point calibration or clear)
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param value ORP calibration value in mV, or -1000.0 to clear calibration
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_orp_calibrate(ezo_sensor_t *sensor, float value);
+
+/**
+ * @brief Query calibration status
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param status Buffer to store calibration status string
+ * @param status_size Size of status buffer
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_sensor_get_calibration_status(ezo_sensor_t *sensor, char *status, size_t status_size);
+
+// Output string control functions
+/**
+ * @brief Enable or disable specific output parameters for RTD sensor
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param param Parameter name ("T" for temperature)
+ * @param enabled true to enable, false to disable
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_rtd_set_output_parameter(ezo_sensor_t *sensor, const char *param, bool enabled);
+
+/**
+ * @brief Enable or disable specific output parameters for humidity sensor
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param param Parameter name ("HUM" for humidity, "T" for temperature, "Dew" for dew point)
+ * @param enabled true to enable, false to disable
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_hum_set_output_parameter(ezo_sensor_t *sensor, const char *param, bool enabled);
+
+/**
+ * @brief Enable or disable specific output parameters for pH sensor
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param param Parameter name ("pH" for pH value)
+ * @param enabled true to enable, false to disable
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_ph_set_output_parameter(ezo_sensor_t *sensor, const char *param, bool enabled);
+
+/**
+ * @brief Enable or disable specific output parameters for DO sensor
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param param Parameter name ("DO" for dissolved oxygen, "%" for saturation)
+ * @param enabled true to enable, false to disable
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_do_set_output_parameter(ezo_sensor_t *sensor, const char *param, bool enabled);
+
+/**
+ * @brief Get output string configuration
+ * 
+ * @param sensor Pointer to EZO sensor handle
+ * @param config Buffer to store output configuration string
+ * @param config_size Size of config buffer
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t ezo_sensor_get_output_config(ezo_sensor_t *sensor, char *config, size_t config_size);
 
 #ifdef __cplusplus
 }

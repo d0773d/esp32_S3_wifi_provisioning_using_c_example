@@ -26,6 +26,7 @@ static int s_ph_index = -1;   // pH
 static int s_ec_index = -1;   // Electrical conductivity
 static int s_do_index = -1;   // Dissolved oxygen
 static int s_orp_index = -1;  // ORP
+static int s_hum_index = -1;  // Humidity
 
 /**
  * @brief Initialize all sensors
@@ -91,6 +92,9 @@ esp_err_t sensor_manager_init(void) {
                 } else if (strcmp(sensor->config.type, EZO_TYPE_ORP) == 0) {
                     s_orp_index = s_ezo_count;
                     ESP_LOGI(TAG, "  → ORP sensor");
+                } else if (strcmp(sensor->config.type, EZO_TYPE_HUM) == 0) {
+                    s_hum_index = s_ezo_count;
+                    ESP_LOGI(TAG, "  → Humidity sensor");
                 }
                 
                 s_ezo_count++;
@@ -126,6 +130,7 @@ esp_err_t sensor_manager_deinit(void) {
     s_ec_index = -1;
     s_do_index = -1;
     s_orp_index = -1;
+    s_hum_index = -1;
     
     ESP_LOGI(TAG, "Sensor manager deinitialized");
     return ESP_OK;
@@ -216,6 +221,18 @@ esp_err_t sensor_manager_read_orp(float *orp) {
 }
 
 /**
+ * @brief Read humidity from EZO-HUM
+ */
+esp_err_t sensor_manager_read_humidity(float *humidity) {
+    if (s_hum_index < 0) {
+        ESP_LOGD(TAG, "Humidity sensor not available");
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    return ezo_sensor_read(&s_ezo_sensors[s_hum_index], humidity);
+}
+
+/**
  * @brief Get number of EZO sensors
  */
 uint8_t sensor_manager_get_ezo_count(void) {
@@ -237,6 +254,21 @@ void* sensor_manager_get_ezo_sensor(uint8_t index) {
         return NULL;
     }
     return &s_ezo_sensors[index];
+}
+
+/**
+ * @brief Read all values from an EZO sensor by index
+ */
+esp_err_t sensor_manager_read_ezo_sensor(uint8_t index, char *sensor_type, float values[4], uint8_t *count) {
+    if (index >= s_ezo_count || sensor_type == NULL || values == NULL || count == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    ezo_sensor_t *sensor = &s_ezo_sensors[index];
+    strncpy(sensor_type, sensor->config.type, 15);
+    sensor_type[15] = '\0';
+    
+    return ezo_sensor_read_all(sensor, values, count);
 }
 
 /**

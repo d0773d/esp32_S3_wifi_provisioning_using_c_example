@@ -127,26 +127,36 @@ float read_temperature(void) {
     if (sensor_manager_read_temperature(&temp) == ESP_OK) {
         return temp;
     }
-    // Fallback to randomized value if sensor not available
-    return 15.0f + ((float)(esp_random() % 1500) / 100.0f);
+    // Return 0 if sensor not available (don't send fake data)
+    return 0.0f;
 }
 
 float read_humidity(void) {
-    // No humidity sensor in current setup
-    // Randomized between 40% and 80% for testing
-    return 40.0f + ((float)(esp_random() % 4000) / 100.0f);
+    // EZO-HUM sensor would provide humidity data if connected
+    // Return 0 if sensor not available (don't send fake data)
+    return 0.0f;
 }
 
 float read_soil_moisture(void) {
-    // Could map to EC sensor if desired, for now randomized
-    // Randomized between 20% and 70% for testing
-    return 20.0f + ((float)(esp_random() % 5000) / 100.0f);
+    float ec = 0.0f;
+    // Use EC (electrical conductivity) sensor as soil moisture indicator
+    // EC is often used to measure nutrient/moisture content in growing medium
+    if (sensor_manager_read_ec(&ec) == ESP_OK) {
+        // Convert EC to approximate soil moisture percentage
+        // EC typically ranges 0.5-3.0 mS/cm for soil
+        // Map this to 0-100% moisture scale (simplified conversion)
+        float moisture = (ec / 3000.0f) * 100.0f; // EC in µS/cm
+        if (moisture > 100.0f) moisture = 100.0f;
+        return moisture;
+    }
+    // Return 0 if sensor not available (don't send fake data)
+    return 0.0f;
 }
 
 float read_light_level(void) {
-    // No light sensor in current setup
-    // Randomized between 100 and 2000 lux for testing
-    return 100.0f + (float)(esp_random() % 1900);
+    // No light sensor connected
+    // Return 0 if sensor not available (don't send fake data)
+    return 0.0f;
 }
 
 float read_battery_level(void) {
@@ -155,8 +165,8 @@ float read_battery_level(void) {
     if (sensor_manager_read_battery_percentage(&battery) == ESP_OK) {
         return battery;
     }
-    // Fallback to randomized value if sensor not available
-    return 60.0f + ((float)(esp_random() % 4000) / 100.0f);
+    // Return 0 if sensor not available (don't send fake data)
+    return 0.0f;
 }
 
 /**
@@ -173,14 +183,23 @@ static void telemetry_timer_callback(void *arg)
     strncpy(data.device_id, s_device_id, sizeof(data.device_id) - 1);
     data.device_id[sizeof(data.device_id) - 1] = '\0';
     
-    // Read sensor values
-    data.sensors.temperature = read_temperature();
-    data.sensors.humidity = read_humidity();
-    data.sensors.soil_moisture = read_soil_moisture();
-    data.sensors.light_level = read_light_level();
+    // Legacy sensor data structure (for backwards compatibility)
+    data.sensors.temperature = NAN;
+    data.sensors.humidity = NAN;
+    data.sensors.soil_moisture = NAN;
+    data.sensors.light_level = NAN;
+    data.sensors.ph = NAN;
+    data.sensors.ec = NAN;
+    data.sensors.dissolved_oxygen = NAN;
+    data.sensors.orp = NAN;
     
-    // Read system values
-    data.battery = read_battery_level();
+    // Read battery level (set to NAN if not available)
+    float battery;
+    if (sensor_manager_read_battery_percentage(&battery) == ESP_OK) {
+        data.battery = battery;
+    } else {
+        data.battery = NAN;
+    }
     
     // Get WiFi RSSI
     wifi_ap_record_t ap_info;
@@ -193,9 +212,35 @@ static void telemetry_timer_callback(void *arg)
     // Publish the data
     esp_err_t ret = mqtt_publish_kannacloud_data(&data);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Published sensor data: temp=%.1f°C, humidity=%.1f%%, soil=%.1f%%, light=%.0f, battery=%.0f%%, rssi=%ddBm",
-                 data.sensors.temperature, data.sensors.humidity, data.sensors.soil_moisture,
-                 data.sensors.light_level, data.battery, data.rssi);
+        // Build log message dynamically based on what sensors are available
+        char log_buf[256];
+        int len = 0;
+        
+        uint8_t sensor_count = sensor_manager_get_ezo_count();
+        for (uint8_t i = 0; i < sensor_count; i++) {
+            char sensor_type[16];
+            float values[4];
+            uint8_t value_count;
+            
+            if (sensor_manager_read_ezo_sensor(i, sensor_type, values, &value_count) == ESP_OK) {
+                if (value_count == 1) {
+                    len += snprintf(log_buf + len, sizeof(log_buf) - len, "%s=%.2f, ", sensor_type, values[0]);
+                } else if (value_count > 1) {
+                    len += snprintf(log_buf + len, sizeof(log_buf) - len, "%s=[%.2f", sensor_type, values[0]);
+                    for (uint8_t j = 1; j < value_count; j++) {
+                        len += snprintf(log_buf + len, sizeof(log_buf) - len, ",%.2f", values[j]);
+                    }
+                    len += snprintf(log_buf + len, sizeof(log_buf) - len, "], ");
+                }
+            }
+        }
+        
+        if (!isnan(data.battery)) {
+            len += snprintf(log_buf + len, sizeof(log_buf) - len, "battery=%.0f%%, ", data.battery);
+        }
+        len += snprintf(log_buf + len, sizeof(log_buf) - len, "rssi=%ddBm", data.rssi);
+        
+        ESP_LOGI(TAG, "Published sensor data: %s", log_buf);
     } else {
         ESP_LOGW(TAG, "Failed to publish sensor data");
     }
@@ -464,25 +509,32 @@ esp_err_t mqtt_publish_kannacloud_data(const kannacloud_data_t *data)
     // Add device_id (required)
     cJSON_AddStringToObject(root, "device_id", data->device_id);
     
-    // Add sensors object
+    // Add sensors object - read all EZO sensors dynamically
     cJSON *sensors = cJSON_CreateObject();
     if (sensors == NULL) {
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
     
-    // Add sensor values (only if not NAN)
-    if (!isnan(data->sensors.temperature)) {
-        cJSON_AddNumberToObject(sensors, "temperature", data->sensors.temperature);
-    }
-    if (!isnan(data->sensors.humidity)) {
-        cJSON_AddNumberToObject(sensors, "humidity", data->sensors.humidity);
-    }
-    if (!isnan(data->sensors.soil_moisture)) {
-        cJSON_AddNumberToObject(sensors, "soil_moisture", data->sensors.soil_moisture);
-    }
-    if (!isnan(data->sensors.light_level)) {
-        cJSON_AddNumberToObject(sensors, "light_level", data->sensors.light_level);
+    uint8_t sensor_count = sensor_manager_get_ezo_count();
+    for (uint8_t i = 0; i < sensor_count; i++) {
+        char sensor_type[16];
+        float values[4];
+        uint8_t value_count;
+        
+        if (sensor_manager_read_ezo_sensor(i, sensor_type, values, &value_count) == ESP_OK) {
+            if (value_count == 1) {
+                // Single value sensor
+                cJSON_AddNumberToObject(sensors, sensor_type, values[0]);
+            } else if (value_count > 1) {
+                // Multi-value sensor - create array
+                cJSON *value_array = cJSON_CreateArray();
+                for (uint8_t j = 0; j < value_count; j++) {
+                    cJSON_AddItemToArray(value_array, cJSON_CreateNumber(values[j]));
+                }
+                cJSON_AddItemToObject(sensors, sensor_type, value_array);
+            }
+        }
     }
     
     cJSON_AddItemToObject(root, "sensors", sensors);

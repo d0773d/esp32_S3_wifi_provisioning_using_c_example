@@ -7,6 +7,7 @@
 #include "cloud_provisioning.h"
 #include "wifi_manager.h"
 #include "sensor_manager.h"
+#include "ezo_sensor.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -25,15 +26,15 @@ static const char *TAG = "MQTT_CLIENT";
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static mqtt_state_t s_mqtt_state = MQTT_STATE_DISCONNECTED;
-static esp_timer_handle_t s_telemetry_timer = NULL;
-static uint32_t s_telemetry_interval_sec = 60; // Default: 60 seconds for KannaCloud sensor data
+static TaskHandle_t s_sensor_task_handle = NULL;
+static uint32_t s_reading_interval_sec = 60; // Default: 60 seconds between sensor reading cycles
 static uint32_t s_mqtt_reconnects = 0;
 static char s_device_id[32] = {0};
 static char s_mqtt_ca_cert[CLOUD_PROV_MAX_CERT_SIZE] = {0}; // Static buffer for CA certificate
 
 // Forward declarations
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
-static void telemetry_timer_callback(void *arg);
+static void sensor_reading_task(void *arg);
 
 /**
  * @brief MQTT event handler
@@ -170,53 +171,44 @@ float read_battery_level(void) {
 }
 
 /**
- * @brief Telemetry timer callback - publishes KannaCloud sensor data periodically
+ * @brief Sensor reading task - reads all sensors sequentially then publishes
  */
-static void telemetry_timer_callback(void *arg)
+static void sensor_reading_task(void *arg)
 {
-    if (s_mqtt_state != MQTT_STATE_CONNECTED) {
-        return;
-    }
+    ESP_LOGI(TAG, "Sensor reading task started");
     
-    // Prepare KannaCloud data structure
-    kannacloud_data_t data;
-    strncpy(data.device_id, s_device_id, sizeof(data.device_id) - 1);
-    data.device_id[sizeof(data.device_id) - 1] = '\0';
-    
-    // Legacy sensor data structure (for backwards compatibility)
-    data.sensors.temperature = NAN;
-    data.sensors.humidity = NAN;
-    data.sensors.soil_moisture = NAN;
-    data.sensors.light_level = NAN;
-    data.sensors.ph = NAN;
-    data.sensors.ec = NAN;
-    data.sensors.dissolved_oxygen = NAN;
-    data.sensors.orp = NAN;
-    
-    // Read battery level (set to NAN if not available)
-    float battery;
-    if (sensor_manager_read_battery_percentage(&battery) == ESP_OK) {
-        data.battery = battery;
-    } else {
-        data.battery = NAN;
-    }
-    
-    // Get WiFi RSSI
-    wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-        data.rssi = ap_info.rssi;
-    } else {
-        data.rssi = -100; // Default if unable to read
-    }
-    
-    // Publish the data
-    esp_err_t ret = mqtt_publish_kannacloud_data(&data);
-    if (ret == ESP_OK) {
-        // Build log message dynamically based on what sensors are available
-        char log_buf[256];
-        int len = 0;
+    while (1) {
+        // Only publish if connected to MQTT broker
+        if (s_mqtt_state != MQTT_STATE_CONNECTED) {
+            vTaskDelay(pdMS_TO_TICKS(1000)); // Wait 1 second before checking again
+            continue;
+        }
         
+        // Read all EZO sensors sequentially - this blocks ~5 seconds per sensor
         uint8_t sensor_count = sensor_manager_get_ezo_count();
+        ESP_LOGI(TAG, "Reading %d EZO sensors...", sensor_count);
+        
+        // Create JSON root object
+        cJSON *root = cJSON_CreateObject();
+        if (root == NULL) {
+            ESP_LOGW(TAG, "Failed to create JSON object");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+        
+        // Add device_id
+        cJSON_AddStringToObject(root, "device_id", s_device_id);
+        
+        // Add sensors object
+        cJSON *sensors = cJSON_CreateObject();
+        if (sensors == NULL) {
+            cJSON_Delete(root);
+            ESP_LOGW(TAG, "Failed to create sensors object");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+        
+        // Read each sensor and add to JSON
         for (uint8_t i = 0; i < sensor_count; i++) {
             char sensor_type[16];
             float values[4];
@@ -224,25 +216,106 @@ static void telemetry_timer_callback(void *arg)
             
             if (sensor_manager_read_ezo_sensor(i, sensor_type, values, &value_count) == ESP_OK) {
                 if (value_count == 1) {
-                    len += snprintf(log_buf + len, sizeof(log_buf) - len, "%s=%.2f, ", sensor_type, values[0]);
+                    // Single value sensor
+                    cJSON_AddNumberToObject(sensors, sensor_type, values[0]);
                 } else if (value_count > 1) {
-                    len += snprintf(log_buf + len, sizeof(log_buf) - len, "%s=[%.2f", sensor_type, values[0]);
-                    for (uint8_t j = 1; j < value_count; j++) {
-                        len += snprintf(log_buf + len, sizeof(log_buf) - len, ",%.2f", values[j]);
+                    // Multi-value sensor - create object with named fields
+                    cJSON *sensor_obj = cJSON_CreateObject();
+                    
+                    // Define field names based on sensor type
+                    if (strcmp(sensor_type, "HUM") == 0) {
+                        // Get HUM sensor config to determine which parameters are enabled
+                        ezo_sensor_t *sensor = (ezo_sensor_t *)sensor_manager_get_ezo_sensor(i);
+                        if (sensor != NULL && sensor->config.hum.param_count > 0) {
+                            // Use dynamic parameter mapping based on enabled outputs
+                            for (uint8_t j = 0; j < value_count && j < sensor->config.hum.param_count; j++) {
+                                const char *param = sensor->config.hum.param_order[j];
+                                const char *field_name = NULL;
+                                
+                                if (strcmp(param, "HUM") == 0) {
+                                    field_name = "humidity";
+                                } else if (strcmp(param, "T") == 0) {
+                                    field_name = "air_temp";
+                                } else if (strcmp(param, "DEW") == 0) {
+                                    field_name = "dew_point";
+                                }
+                                
+                                if (field_name != NULL) {
+                                    cJSON_AddNumberToObject(sensor_obj, field_name, values[j]);
+                                }
+                            }
+                        } else {
+                            // Fallback if config unavailable
+                            if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "humidity", values[0]);
+                            if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "air_temp", values[1]);
+                            if (value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "dew_point", values[2]);
+                        }
+                    } else if (strcmp(sensor_type, "ORP") == 0) {
+                        if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "orp", values[0]);
+                    } else if (strcmp(sensor_type, "DO") == 0) {
+                        if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "dissolved_oxygen", values[0]);
+                        if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "saturation", values[1]);
+                    } else if (strcmp(sensor_type, "EC") == 0) {
+                        if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "conductivity", values[0]);
+                        if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "tds", values[1]);
+                        if (value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "salinity", values[2]);
+                        if (value_count >= 4) cJSON_AddNumberToObject(sensor_obj, "specific_gravity", values[3]);
+                    } else {
+                        // Unknown multi-value sensor - use generic field names
+                        for (uint8_t j = 0; j < value_count; j++) {
+                            char field_name[16];
+                            snprintf(field_name, sizeof(field_name), "value_%d", j);
+                            cJSON_AddNumberToObject(sensor_obj, field_name, values[j]);
+                        }
                     }
-                    len += snprintf(log_buf + len, sizeof(log_buf) - len, "], ");
+                    
+                    cJSON_AddItemToObject(sensors, sensor_type, sensor_obj);
                 }
             }
         }
         
-        if (!isnan(data.battery)) {
-            len += snprintf(log_buf + len, sizeof(log_buf) - len, "battery=%.0f%%, ", data.battery);
-        }
-        len += snprintf(log_buf + len, sizeof(log_buf) - len, "rssi=%ddBm", data.rssi);
+        cJSON_AddItemToObject(root, "sensors", sensors);
         
-        ESP_LOGI(TAG, "Published sensor data: %s", log_buf);
-    } else {
-        ESP_LOGW(TAG, "Failed to publish sensor data");
+        // Read battery level
+        float battery;
+        if (sensor_manager_read_battery_percentage(&battery) == ESP_OK) {
+            cJSON_AddNumberToObject(root, "battery", battery);
+        }
+        
+        // Get WiFi RSSI
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            cJSON_AddNumberToObject(root, "rssi", ap_info.rssi);
+        }
+        
+        // Convert to JSON string
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        
+        if (json_str == NULL) {
+            ESP_LOGW(TAG, "Failed to serialize JSON");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+        
+        // Log the JSON string
+        ESP_LOGI(TAG, "Publishing JSON: %s", json_str);
+        
+        // Publish to MQTT
+        char topic[128];
+        snprintf(topic, sizeof(topic), "kannacloud/sensor/%s/data", s_device_id);
+        
+        int msg_id = esp_mqtt_client_publish(s_mqtt_client, topic, json_str, 0, 1, 0);
+        if (msg_id >= 0) {
+            ESP_LOGI(TAG, "✓ MQTT data published successfully");
+        } else {
+            ESP_LOGW(TAG, "✗ Failed to publish MQTT data");
+        }
+        
+        free(json_str);
+        
+        // Wait 5 seconds before next cycle
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
@@ -359,30 +432,25 @@ esp_err_t mqtt_client_start(void)
         return ret;
     }
     
-    // Create telemetry timer if interval is set
-    if (s_telemetry_interval_sec > 0 && s_telemetry_timer == NULL) {
-        const esp_timer_create_args_t timer_args = {
-            .callback = telemetry_timer_callback,
-            .arg = NULL,
-            .name = "telemetry_timer",
-            .skip_unhandled_events = true
-        };
+    // Create sensor reading task pinned to Core 1 (application core)
+    // This keeps I2C sensor operations away from WiFi/MQTT on Core 0
+    if (s_sensor_task_handle == NULL) {
+        BaseType_t task_ret = xTaskCreatePinnedToCore(
+            sensor_reading_task,
+            "sensor_read",
+            4096,
+            NULL,
+            5,
+            &s_sensor_task_handle,
+            1  // Pin to Core 1 (application core)
+        );
         
-        ret = esp_timer_create(&timer_args, &s_telemetry_timer);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to create telemetry timer: %s", esp_err_to_name(ret));
-            return ret;
+        if (task_ret != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create sensor reading task");
+            return ESP_FAIL;
         }
         
-        ret = esp_timer_start_periodic(s_telemetry_timer, s_telemetry_interval_sec * 1000000ULL);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start telemetry timer: %s", esp_err_to_name(ret));
-            esp_timer_delete(s_telemetry_timer);
-            s_telemetry_timer = NULL;
-            return ret;
-        }
-        
-        ESP_LOGI(TAG, "✓ Telemetry timer started (interval: %lu seconds)", s_telemetry_interval_sec);
+        ESP_LOGI(TAG, "✓ Sensor reading task started (cycle interval: %lu seconds)", s_reading_interval_sec);
     }
     
     return ESP_OK;
@@ -394,11 +462,10 @@ esp_err_t mqtt_client_stop(void)
         return ESP_OK;
     }
     
-    // Stop telemetry timer
-    if (s_telemetry_timer != NULL) {
-        esp_timer_stop(s_telemetry_timer);
-        esp_timer_delete(s_telemetry_timer);
-        s_telemetry_timer = NULL;
+    // Stop sensor reading task
+    if (s_sensor_task_handle != NULL) {
+        vTaskDelete(s_sensor_task_handle);
+        s_sensor_task_handle = NULL;
     }
     
     // Publish offline status before disconnecting
@@ -527,12 +594,57 @@ esp_err_t mqtt_publish_kannacloud_data(const kannacloud_data_t *data)
                 // Single value sensor
                 cJSON_AddNumberToObject(sensors, sensor_type, values[0]);
             } else if (value_count > 1) {
-                // Multi-value sensor - create array
-                cJSON *value_array = cJSON_CreateArray();
-                for (uint8_t j = 0; j < value_count; j++) {
-                    cJSON_AddItemToArray(value_array, cJSON_CreateNumber(values[j]));
+                // Multi-value sensor - create object with named fields
+                cJSON *sensor_obj = cJSON_CreateObject();
+                
+                // Define field names based on sensor type
+                if (strcmp(sensor_type, "HUM") == 0) {
+                    // Get HUM sensor config to determine which parameters are enabled
+                    ezo_sensor_t *sensor = (ezo_sensor_t *)sensor_manager_get_ezo_sensor(i);
+                    if (sensor != NULL && sensor->config.hum.param_count > 0) {
+                        // Use dynamic parameter mapping based on enabled outputs
+                        for (uint8_t j = 0; j < value_count && j < sensor->config.hum.param_count; j++) {
+                            const char *param = sensor->config.hum.param_order[j];
+                            const char *field_name = NULL;
+                            
+                            if (strcmp(param, "HUM") == 0) {
+                                field_name = "humidity";
+                            } else if (strcmp(param, "T") == 0) {
+                                field_name = "air_temp";
+                            } else if (strcmp(param, "DEW") == 0) {
+                                field_name = "dew_point";
+                            }
+                            
+                            if (field_name != NULL) {
+                                cJSON_AddNumberToObject(sensor_obj, field_name, values[j]);
+                            }
+                        }
+                    } else {
+                        // Fallback if config unavailable
+                        if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "humidity", values[0]);
+                        if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "air_temp", values[1]);
+                        if (value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "dew_point", values[2]);
+                    }
+                } else if (strcmp(sensor_type, "ORP") == 0) {
+                    if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "orp", values[0]);
+                } else if (strcmp(sensor_type, "DO") == 0) {
+                    if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "dissolved_oxygen", values[0]);
+                    if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "saturation", values[1]);
+                } else if (strcmp(sensor_type, "EC") == 0) {
+                    if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "conductivity", values[0]);
+                    if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "tds", values[1]);
+                    if (value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "salinity", values[2]);
+                    if (value_count >= 4) cJSON_AddNumberToObject(sensor_obj, "specific_gravity", values[3]);
+                } else {
+                    // Unknown multi-value sensor - use generic field names
+                    for (uint8_t j = 0; j < value_count; j++) {
+                        char field_name[16];
+                        snprintf(field_name, sizeof(field_name), "value_%d", j);
+                        cJSON_AddNumberToObject(sensor_obj, field_name, values[j]);
+                    }
                 }
-                cJSON_AddItemToObject(sensors, sensor_type, value_array);
+                
+                cJSON_AddItemToObject(sensors, sensor_type, sensor_obj);
             }
         }
     }
@@ -553,6 +665,9 @@ esp_err_t mqtt_publish_kannacloud_data(const kannacloud_data_t *data)
     if (json_str == NULL) {
         return ESP_ERR_NO_MEM;
     }
+    
+    // Debug: Log the exact JSON being published
+    ESP_LOGI(TAG, "Publishing JSON: %s", json_str);
     
     // Publish to KannaCloud topic: kannacloud/sensor/{device_id}/data
     char topic[128];
@@ -678,23 +793,9 @@ esp_err_t mqtt_unsubscribe(const char *topic)
 
 esp_err_t mqtt_set_telemetry_interval(uint32_t interval_sec)
 {
-    s_telemetry_interval_sec = interval_sec;
-    
-    if (s_telemetry_timer != NULL) {
-        esp_timer_stop(s_telemetry_timer);
-        
-        if (interval_sec > 0) {
-            esp_err_t ret = esp_timer_start_periodic(s_telemetry_timer, interval_sec * 1000000ULL);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to restart telemetry timer: %s", esp_err_to_name(ret));
-                return ret;
-            }
-            ESP_LOGI(TAG, "Telemetry interval updated to %lu seconds", interval_sec);
-        } else {
-            ESP_LOGI(TAG, "Telemetry timer disabled");
-        }
-    }
-    
+    s_reading_interval_sec = interval_sec;
+    ESP_LOGI(TAG, "Sensor reading cycle interval updated to %lu seconds", interval_sec);
+    // Task will pick up the new interval on next cycle
     return ESP_OK;
 }
 

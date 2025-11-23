@@ -8,6 +8,8 @@
 #include "max17048.h"
 #include "ezo_sensor.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 
 static const char *TAG = "SENSOR_MGR";
@@ -27,6 +29,17 @@ static int s_ec_index = -1;   // Electrical conductivity
 static int s_do_index = -1;   // Dissolved oxygen
 static int s_orp_index = -1;  // ORP
 static int s_hum_index = -1;  // Humidity
+
+// Cached sensor readings (last successful values)
+typedef struct {
+    float values[4];
+    uint8_t count;
+    bool valid;
+    uint32_t timestamp_ms;
+} cached_sensor_data_t;
+
+static cached_sensor_data_t s_cached_readings[MAX_EZO_SENSORS] = {0};
+#define CACHE_TIMEOUT_MS 300000  // 5 minutes - consider cached data stale after this
 
 /**
  * @brief Initialize all sensors
@@ -131,6 +144,9 @@ esp_err_t sensor_manager_deinit(void) {
     s_do_index = -1;
     s_orp_index = -1;
     s_hum_index = -1;
+    
+    // Clear cached readings
+    memset(s_cached_readings, 0, sizeof(s_cached_readings));
     
     ESP_LOGI(TAG, "Sensor manager deinitialized");
     return ESP_OK;
@@ -258,6 +274,9 @@ void* sensor_manager_get_ezo_sensor(uint8_t index) {
 
 /**
  * @brief Read all values from an EZO sensor by index
+ * 
+ * This function attempts to read fresh sensor data. If the read fails or the sensor
+ * is not ready, it returns cached data from the last successful read (if available).
  */
 esp_err_t sensor_manager_read_ezo_sensor(uint8_t index, char *sensor_type, float values[4], uint8_t *count) {
     if (index >= s_ezo_count || sensor_type == NULL || values == NULL || count == NULL) {
@@ -265,10 +284,46 @@ esp_err_t sensor_manager_read_ezo_sensor(uint8_t index, char *sensor_type, float
     }
     
     ezo_sensor_t *sensor = &s_ezo_sensors[index];
+    
+    // Debug: Log the sensor type from config
+    ESP_LOGD(TAG, "Reading sensor index %d: type='%s' (addr=0x%02X)", 
+             index, sensor->config.type, sensor->config.i2c_address);
+    
     strncpy(sensor_type, sensor->config.type, 15);
     sensor_type[15] = '\0';
     
-    return ezo_sensor_read_all(sensor, values, count);
+    // Try to read fresh data from sensor
+    esp_err_t ret = ezo_sensor_read_all(sensor, values, count);
+    
+    if (ret == ESP_OK) {
+        // Success - cache the new readings
+        cached_sensor_data_t *cache = &s_cached_readings[index];
+        for (uint8_t i = 0; i < *count && i < 4; i++) {
+            cache->values[i] = values[i];
+        }
+        cache->count = *count;
+        cache->valid = true;
+        cache->timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        return ESP_OK;
+    } else {
+        // Read failed - try to use cached data
+        cached_sensor_data_t *cache = &s_cached_readings[index];
+        uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        
+        if (cache->valid && (now_ms - cache->timestamp_ms) < CACHE_TIMEOUT_MS) {
+            // Return cached data
+            for (uint8_t i = 0; i < cache->count && i < 4; i++) {
+                values[i] = cache->values[i];
+            }
+            *count = cache->count;
+            ESP_LOGD(TAG, "Sensor 0x%02X read failed, using cached data (%lu ms old)", 
+                     sensor->config.i2c_address, now_ms - cache->timestamp_ms);
+            return ESP_OK;
+        }
+        
+        // No valid cache available
+        return ret;
+    }
 }
 
 /**

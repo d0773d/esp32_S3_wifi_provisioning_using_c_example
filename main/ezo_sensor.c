@@ -186,9 +186,11 @@ esp_err_t ezo_sensor_get_device_info(ezo_sensor_t *sensor) {
         } else if (field == 1) {
             // Sensor type
             strncpy(sensor->config.type, token, EZO_MAX_SENSOR_TYPE - 1);
+            sensor->config.type[EZO_MAX_SENSOR_TYPE - 1] = '\0';  // Ensure null termination
         } else if (field == 2) {
             // Firmware version
             strncpy(sensor->config.firmware_version, token, EZO_MAX_FW_VERSION - 1);
+            sensor->config.firmware_version[EZO_MAX_FW_VERSION - 1] = '\0';  // Ensure null termination
         }
         token = strtok(NULL, ",");
         field++;
@@ -220,6 +222,47 @@ esp_err_t ezo_sensor_get_device_info(ezo_sensor_t *sensor) {
     } else if (strcmp(sensor->config.type, EZO_TYPE_EC) == 0) {
         ezo_ec_get_probe_type(sensor, &sensor->config.ec.probe_type);
         ezo_ec_get_tds_factor(sensor, &sensor->config.ec.tds_conversion_factor);
+    } else if (strcmp(sensor->config.type, EZO_TYPE_HUM) == 0) {
+        // Query which output parameters are enabled
+        char param_response[EZO_LARGEST_STRING] = {0};
+        ret = ezo_sensor_send_command(sensor, "O,?", param_response, sizeof(param_response), EZO_SHORT_WAIT_MS);
+        if (ret == ESP_OK) {
+            // Parse response: ?O,HUM,T,Dew or ?O,HUM,Dew etc.
+            // Reset counts
+            sensor->config.hum.param_count = 0;
+            sensor->config.hum.param_hum = false;
+            sensor->config.hum.param_t = false;
+            sensor->config.hum.param_dew = false;
+            
+            char *param_token = strtok(param_response, ",");
+            int param_field = 0;
+            
+            while (param_token != NULL && sensor->config.hum.param_count < 4) {
+                if (param_field == 0 && strcmp(param_token, "?O") == 0) {
+                    // Valid output query response
+                } else if (param_field > 0) {
+                    // Store parameter name and set flag
+                    strncpy(sensor->config.hum.param_order[sensor->config.hum.param_count], 
+                           param_token, sizeof(sensor->config.hum.param_order[0]) - 1);
+                    
+                    if (strcmp(param_token, "HUM") == 0) {
+                        sensor->config.hum.param_hum = true;
+                    } else if (strcmp(param_token, "T") == 0) {
+                        sensor->config.hum.param_t = true;
+                    } else if (strcmp(param_token, "Dew") == 0) {
+                        sensor->config.hum.param_dew = true;
+                    }
+                    
+                    sensor->config.hum.param_count++;
+                }
+                param_token = strtok(NULL, ",");
+                param_field++;
+            }
+            
+            ESP_LOGI(TAG, "HUM sensor has %d parameters enabled", sensor->config.hum.param_count);
+        } else {
+            ESP_LOGW(TAG, "Failed to query HUM output parameters");
+        }
     }
 
     return ESP_OK;

@@ -70,6 +70,15 @@ typedef struct {
     struct {
         bool extended_scale;                    // Extended pH scale enabled
     } ph;
+    
+    // HUM-specific parameters
+    struct {
+        bool param_hum;                         // Humidity parameter enabled
+        bool param_t;                           // Temperature parameter enabled
+        bool param_dew;                         // Dew point parameter enabled
+        char param_order[4][8];                 // Order of parameters (e.g., "HUM", "T", "Dew")
+        uint8_t param_count;                    // Number of enabled parameters
+    } hum;
 } ezo_sensor_config_t;
 
 /**

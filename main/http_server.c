@@ -29,6 +29,7 @@ extern float read_battery_level(void);
 // Sensor manager functions
 #include "sensor_manager.h"
 #include "ezo_sensor.h"
+#include "ezo_sensor.h"
 #include "max17048.h"
 #include "mqtt_telemetry.h"  // For MAX_SENSOR_VALUES
 
@@ -190,10 +191,10 @@ static const char *HTML_DASHBOARD =
 "</div>"
 "<script>"
 "let chart; const maxDataPoints=20; const chartData={labels:[]};"
-"const sensorConfigs={RTD:{label:'Temperature',unit:'°C',color:'#ef4444',yAxisID:'y'},pH:{label:'pH',unit:'',color:'#8b5cf6',yAxisID:'y'},EC:{label:'Conductivity',unit:'µS',color:'#06b6d4',yAxisID:'y1'},HUM_0:{label:'Humidity',unit:'%',color:'#3b82f6',yAxisID:'y'},HUM_1:{label:'Temp(HUM)',unit:'°C',color:'#f97316',yAxisID:'y'},HUM_2:{label:'Dew Point',unit:'°C',color:'#a855f7',yAxisID:'y'}};"
+"const sensorConfigs={RTD:{label:'Temperature',unit:'°C',color:'#ef4444',yAxisID:'y'},pH:{label:'pH',unit:'',color:'#8b5cf6',yAxisID:'y'},EC_conductivity:{label:'Conductivity',unit:'µS',color:'#06b6d4',yAxisID:'y1'},EC_tds:{label:'TDS',unit:'ppm',color:'#10b981',yAxisID:'y1'},EC_salinity:{label:'Salinity',unit:'PSU',color:'#f59e0b',yAxisID:'y1'},HUM_humidity:{label:'Humidity',unit:'%',color:'#3b82f6',yAxisID:'y'},HUM_air_temp:{label:'Air Temp',unit:'°C',color:'#f97316',yAxisID:'y'},HUM_dew_point:{label:'Dew Point',unit:'°C',color:'#a855f7',yAxisID:'y'},DO_dissolved_oxygen:{label:'DO',unit:'mg/L',color:'#14b8a6',yAxisID:'y'},DO_saturation:{label:'DO Sat',unit:'%',color:'#06b6d4',yAxisID:'y'},ORP_orp:{label:'ORP',unit:'mV',color:'#ec4899',yAxisID:'y'}};"
 "function initChart(){"
 "const ctx=document.getElementById('sensorChart').getContext('2d');"
-"chart=new Chart(ctx,{type:'line',data:{labels:chartData.labels,datasets:[]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top'}},scales:{y:{beginAtZero:false,title:{display:true,text:'Primary (°C, pH, %)'},position:'left'},y1:{beginAtZero:false,title:{display:true,text:'Secondary (µS)'},position:'right',grid:{drawOnChartArea:false}}}}});"
+"chart=new Chart(ctx,{type:'line',data:{labels:chartData.labels,datasets:[]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top'}},scales:{y:{beginAtZero:false,title:{display:true,text:'Primary (°C, pH, %, mg/L, mV)'},position:'left'},y1:{beginAtZero:false,title:{display:true,text:'Secondary (µS, ppm, PSU)'},position:'right',grid:{drawOnChartArea:false}}}}});"
 "}"
 "function updateChart(sensors){"
 "const now=new Date().toLocaleTimeString();"
@@ -201,18 +202,18 @@ static const char *HTML_DASHBOARD =
 "if(chartData.labels.length>maxDataPoints)chartData.labels.shift();"
 "for(const sensorType in sensors){"
 "const value=sensors[sensorType];"
-"if(Array.isArray(value)){"
-"for(let i=0;i<value.length;i++){"
-"const key=sensorType+'_'+i;"
+"if(typeof value==='object'&&!Array.isArray(value)){"
+"for(const field in value){"
+"const key=sensorType+'_'+field;"
 "if(!chartData[key]){"
 "chartData[key]=[];"
-"const cfg=sensorConfigs[key]||{label:sensorType+'['+i+']',unit:'',color:'#94a3b8',yAxisID:'y'};"
+"const cfg=sensorConfigs[key]||{label:sensorType+' '+field,unit:'',color:'#94a3b8',yAxisID:'y'};"
 "chart.data.datasets.push({label:cfg.label+(cfg.unit?' ('+cfg.unit+')':''),data:chartData[key],borderColor:cfg.color,backgroundColor:cfg.color+'20',tension:0.4,yAxisID:cfg.yAxisID});"
 "}"
-"chartData[key].push(value[i]);"
+"chartData[key].push(value[field]);"
 "if(chartData[key].length>maxDataPoints)chartData[key].shift();"
 "}"
-"}else{"
+"}else if(typeof value==='number'){"
 "if(!chartData[sensorType]){"
 "chartData[sensorType]=[];"
 "const cfg=sensorConfigs[sensorType]||{label:sensorType,unit:'',color:'#94a3b8',yAxisID:'y'};"
@@ -380,12 +381,57 @@ static esp_err_t api_status_handler(httpd_req_t *req)
                 // Single value sensor - add as number
                 cJSON_AddNumberToObject(sensors, sensor_type, values[0]);
             } else if (value_count > 1) {
-                // Multi-value sensor - add as array
-                cJSON *array = cJSON_CreateArray();
-                for (uint8_t j = 0; j < value_count; j++) {
-                    cJSON_AddItemToArray(array, cJSON_CreateNumber(values[j]));
+                // Multi-value sensor - create object with named fields
+                cJSON *sensor_obj = cJSON_CreateObject();
+                
+                // Define field names based on sensor type
+                if (strcmp(sensor_type, "HUM") == 0) {
+                    // Get HUM sensor config to determine which parameters are enabled
+                    ezo_sensor_t *sensor = (ezo_sensor_t *)sensor_manager_get_ezo_sensor(i);
+                    if (sensor != NULL && sensor->config.hum.param_count > 0) {
+                        // Use dynamic parameter mapping based on enabled outputs
+                        for (uint8_t j = 0; j < value_count && j < sensor->config.hum.param_count; j++) {
+                            const char *param = sensor->config.hum.param_order[j];
+                            const char *field_name = NULL;
+                            
+                            if (strcmp(param, "HUM") == 0) {
+                                field_name = "humidity";
+                            } else if (strcmp(param, "T") == 0) {
+                                field_name = "air_temp";
+                            } else if (strcmp(param, "DEW") == 0) {
+                                field_name = "dew_point";
+                            }
+                            
+                            if (field_name != NULL) {
+                                cJSON_AddNumberToObject(sensor_obj, field_name, values[j]);
+                            }
+                        }
+                    } else {
+                        // Fallback if config unavailable
+                        if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "humidity", values[0]);
+                        if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "air_temp", values[1]);
+                        if (value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "dew_point", values[2]);
+                    }
+                } else if (strcmp(sensor_type, "ORP") == 0) {
+                    if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "orp", values[0]);
+                } else if (strcmp(sensor_type, "DO") == 0) {
+                    if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "dissolved_oxygen", values[0]);
+                    if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "saturation", values[1]);
+                } else if (strcmp(sensor_type, "EC") == 0) {
+                    if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "conductivity", values[0]);
+                    if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "tds", values[1]);
+                    if (value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "salinity", values[2]);
+                    if (value_count >= 4) cJSON_AddNumberToObject(sensor_obj, "specific_gravity", values[3]);
+                } else {
+                    // Unknown multi-value sensor - use generic field names
+                    for (uint8_t j = 0; j < value_count; j++) {
+                        char field_name[16];
+                        snprintf(field_name, sizeof(field_name), "value_%d", j);
+                        cJSON_AddNumberToObject(sensor_obj, field_name, values[j]);
+                    }
                 }
-                cJSON_AddItemToObject(sensors, sensor_type, array);
+                
+                cJSON_AddItemToObject(sensors, sensor_type, sensor_obj);
             }
         }
     }

@@ -99,6 +99,21 @@ esp_err_t mqtt_client_start(void);
 esp_err_t mqtt_client_stop(void);
 
 /**
+ * @brief Pause sensor reading task
+ * 
+ * Temporarily stops the sensor reading loop to allow safe I2C operations
+ * from other sources (e.g., web interface sensor configuration)
+ */
+void mqtt_pause_sensor_reading(void);
+
+/**
+ * @brief Resume sensor reading task
+ * 
+ * Resumes the sensor reading loop after pause
+ */
+void mqtt_resume_sensor_reading(void);
+
+/**
  * @brief Deinitialize MQTT client and free resources
  * 
  * @return ESP_OK on success, error code otherwise

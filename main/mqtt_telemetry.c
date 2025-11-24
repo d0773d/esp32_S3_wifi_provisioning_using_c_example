@@ -31,6 +31,7 @@ static uint32_t s_reading_interval_sec = 60; // Default: 60 seconds between sens
 static uint32_t s_mqtt_reconnects = 0;
 static char s_device_id[32] = {0};
 static char s_mqtt_ca_cert[CLOUD_PROV_MAX_CERT_SIZE] = {0}; // Static buffer for CA certificate
+static bool s_sensor_reading_paused = false; // Flag to pause sensor reading for I2C operations
 
 // Forward declarations
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
@@ -178,6 +179,12 @@ static void sensor_reading_task(void *arg)
     ESP_LOGI(TAG, "Sensor reading task started");
     
     while (1) {
+        // Check if sensor reading is paused (for I2C operations from web interface)
+        if (s_sensor_reading_paused) {
+            vTaskDelay(pdMS_TO_TICKS(500)); // Wait 500ms and check again
+            continue;
+        }
+        
         // Only publish if connected to MQTT broker
         if (s_mqtt_state != MQTT_STATE_CONNECTED) {
             vTaskDelay(pdMS_TO_TICKS(1000)); // Wait 1 second before checking again
@@ -272,6 +279,9 @@ static void sensor_reading_task(void *arg)
                     cJSON_AddItemToObject(sensors, sensor_type, sensor_obj);
                 }
             }
+            
+            // Yield to allow other tasks (like HTTP server) to run between sensor reads
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
         
         cJSON_AddItemToObject(root, "sensors", sensors);
@@ -501,9 +511,23 @@ bool mqtt_client_is_connected(void)
     return s_mqtt_state == MQTT_STATE_CONNECTED;
 }
 
-mqtt_state_t mqtt_client_get_state(void)
+mqtt_state_t mqtt_get_state(void)
 {
     return s_mqtt_state;
+}
+
+void mqtt_pause_sensor_reading(void)
+{
+    ESP_LOGI(TAG, "Pausing sensor reading task for I2C operations...");
+    s_sensor_reading_paused = true;
+    // Wait a bit to ensure task sees the flag
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
+void mqtt_resume_sensor_reading(void)
+{
+    ESP_LOGI(TAG, "Resuming sensor reading task");
+    s_sensor_reading_paused = false;
 }
 
 esp_err_t mqtt_publish_telemetry(const telemetry_data_t *data)

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<title>ESP32 KannaCloud Dashboard</title>
+<script src='https://cdn.tailwindcss.com'></script>
+<link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css'>
+<script>tailwind.config={darkMode:'class'}</script>
+<style>
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.status-dot { animation: pulse 2s infinite; }
+@keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+.card-animate { animation: slideIn 0.3s ease-out; }
+</style>
+</head>
+<body class='bg-gray-900 text-white'>
+
+<!-- Navigation Bar -->
+<nav class='bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4'>
+<div class='flex items-center justify-between'>
+<div class='flex items-center space-x-8'>
+<h1 class='text-2xl font-bold text-green-600 dark:text-green-400'>🌱 KannaCloud</h1>
+<div class='space-x-4'>
+<a href='/' class='text-green-600 dark:text-green-400 font-semibold'>Dashboard</a>
+</div>
+</div>
+<div class='flex items-center space-x-4'>
+<button onclick='toggleTheme()' id='themeToggle' class='text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'>
+<i class='fas fa-moon text-xl'></i>
+</button>
+</div>
+</div>
+</nav>
+
+<div class='container mx-auto px-6 py-8'>
+
+<!-- Status Card -->
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg shadow mb-6 card-animate'>
+<div class='flex items-center justify-between mb-4'>
+<div class='flex items-center gap-3'>
+<div class='bg-green-500 w-3 h-3 rounded-full status-dot' id='status-dot'></div>
+<h2 class='text-xl font-bold text-gray-900 dark:text-white' id='status-text'>Device Online</h2>
+</div>
+<button onclick='loadStatus()' class='bg-green-600 dark:bg-green-400 hover:bg-green-700 dark:hover:bg-green-500 text-white px-4 py-2 rounded-md'>
+<i class='fas fa-sync-alt'></i> Refresh
+</button>
+</div>
+
+<!-- Stats Grid -->
+<div class='grid grid-cols-1 md:grid-cols-4 gap-6'>
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700'>
+<div class='text-gray-500 dark:text-gray-400 text-sm'>📱 Device ID</div>
+<div class='text-lg font-bold mt-2 text-gray-900 dark:text-white' id='device-id'>Loading...</div>
+</div>
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700'>
+<div class='text-gray-500 dark:text-gray-400 text-sm'>📡 WiFi SSID</div>
+<div class='text-lg font-bold mt-2 text-gray-900 dark:text-white' id='wifi-ssid'>Loading...</div>
+</div>
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700'>
+<div class='text-gray-500 dark:text-gray-400 text-sm'>🌐 IP Address</div>
+<div class='text-lg font-bold mt-2 text-gray-900 dark:text-white' id='ip-addr'>Loading...</div>
+</div>
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700'>
+<div class='text-gray-500 dark:text-gray-400 text-sm'>⏱️ Uptime</div>
+<div class='text-lg font-bold mt-2 text-gray-900 dark:text-white' id='uptime'>Loading...</div>
+</div>
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700'>
+<div class='text-gray-500 dark:text-gray-400 text-sm'>🕒 System Time</div>
+<div class='text-lg font-bold mt-2 text-gray-900 dark:text-white' id='current-time'>Loading...</div>
+</div>
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700'>
+<div class='text-gray-500 dark:text-gray-400 text-sm'>💾 Free Memory</div>
+<div class='text-lg font-bold mt-2 text-gray-900 dark:text-white' id='free-heap'>Loading...</div>
+</div>
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700'>
+<div class='text-gray-500 dark:text-gray-400 text-sm'>📶 WiFi Signal</div>
+<div class='text-lg font-bold mt-2 text-gray-900 dark:text-white' id='wifi-rssi'>Loading...</div>
+</div>
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700'>
+<div class='text-gray-500 dark:text-gray-400 text-sm'>🔋 CPU Usage</div>
+<div class='text-lg font-bold mt-2 text-gray-900 dark:text-white' id='cpu-usage'>Loading...</div>
+</div>
+</div>
+</div>
+
+<!-- Tabs Card -->
+<div class='bg-white dark:bg-gray-800 p-6 rounded-lg shadow card-animate'>
+<div class='flex border-b border-gray-200 dark:border-gray-700 mb-6'>
+<button class='px-6 py-3 text-green-600 dark:text-green-400 border-b-2 border-green-600 dark:border-green-400 font-semibold tab active' onclick='showTab(0)'>📊 Real-Time Data</button>
+<button class='px-6 py-3 text-gray-600 dark:text-gray-400 border-b-2 border-transparent hover:text-gray-900 dark:hover:text-white tab' onclick='showTab(1)'>🔬 Sensors</button>
+<button class='px-6 py-3 text-gray-600 dark:text-gray-400 border-b-2 border-transparent hover:text-gray-900 dark:hover:text-white tab' onclick='showTab(2)'>⚙️ Settings</button>
+<button class='px-6 py-3 text-gray-600 dark:text-gray-400 border-b-2 border-transparent hover:text-gray-900 dark:hover:text-white tab' onclick='showTab(3)'>🔧 Actions</button>
+</div>
+
+<div class='tab-content active' id='tab-0'>
+<h2 class='text-xl font-bold text-gray-900 dark:text-white mb-4'>📊 Current Sensor Values</h2>
+<div id='sensor-values' class='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'>
+<div class='text-gray-500 dark:text-gray-400'>Loading sensor data...</div>
+</div>
+</div>
+
+<div class='tab-content' id='tab-1' style='display:none'>
+<h2 class='text-xl font-bold text-gray-900 dark:text-white mb-4'>🔬 Sensor Configuration</h2>
+<button onclick='rescanSensors()' class='bg-green-600 dark:bg-green-400 hover:bg-green-700 dark:hover:bg-green-500 text-white px-4 py-2 rounded-md mb-4'>
+<i class='fas fa-sync-alt'></i> Rescan I2C Bus
+</button>
+<div id='sensor-list' class='text-gray-600 dark:text-gray-400'>Loading sensors...</div>
+</div>
+
+<div class='tab-content' id='tab-2' style='display:none'>
+<h2 class='text-xl font-bold text-gray-900 dark:text-white mb-4'>⚙️ Configuration</h2>
+<div class='mb-4'>
+<label class='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>MQTT Telemetry Interval (seconds)</label>
+<input type='number' id='mqtt-interval' value='10' min='1' max='3600' 
+class='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white'>
+<button onclick='saveSetting()' class='mt-3 bg-green-600 dark:bg-green-400 hover:bg-green-700 dark:hover:bg-green-500 text-white px-4 py-2 rounded-md'>
+<i class='fas fa-save'></i> Save Settings
+</button>
+</div>
+<div class='mt-6 pt-6 border-t border-gray-200 dark:border-gray-700'>
+<h3 class='text-lg font-semibold text-gray-900 dark:text-white mb-3'>Sensor Reading Control</h3>
+<div class='flex gap-3'>
+<button onclick='pauseSensors()' class='bg-yellow-600 dark:bg-yellow-400 hover:bg-yellow-700 dark:hover:bg-yellow-500 text-white px-4 py-2 rounded-md'>
+<i class='fas fa-pause'></i> Pause Sensor Readings
+</button>
+<button onclick='resumeSensors()' class='bg-green-600 dark:bg-green-400 hover:bg-green-700 dark:hover:bg-green-500 text-white px-4 py-2 rounded-md'>
+<i class='fas fa-play'></i> Resume Sensor Readings
+</button>
+</div>
+<p class='text-sm text-gray-500 dark:text-gray-400 mt-2'>Pause sensor readings to perform manual sensor configuration or troubleshooting.</p>
+</div>
+</div>
+
+<div class='tab-content' id='tab-3' style='display:none'>
+<h2 class='text-xl font-bold text-gray-900 dark:text-white mb-4'>🔧 Device Control</h2>
+<div class='mb-6 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg'>
+<h3 class='text-lg font-semibold text-blue-900 dark:text-blue-100 mb-2'>🔒 Trust Certificate</h3>
+<p class='text-sm text-blue-800 dark:text-blue-200 mb-3'>Download and install the CA certificate to trust all KannaCloud devices in your browser.</p>
+<a href='/ca.crt' download='kannacloud-ca.crt' class='inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md'>
+<i class='fas fa-download'></i> Download CA Certificate
+</a>
+<p class='text-xs text-blue-700 dark:text-blue-300 mt-2'>After download: Settings → Security → Manage Certificates → Import to Trusted Root</p>
+</div>
+<div class='space-y-3'>
+<button onclick='testMQTT()' class='bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-900 dark:text-white px-4 py-2 rounded-md'>
+<i class='fas fa-wifi'></i> Test MQTT Connection
+</button>
+<button onclick='rebootDevice()' class='bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-900 dark:text-white px-4 py-2 rounded-md ml-2'>
+<i class='fas fa-redo'></i> Reboot Device
+</button>
+<button onclick='clearWiFi()' class='bg-red-600 dark:bg-red-500 hover:bg-red-700 dark:hover:bg-red-600 text-white px-4 py-2 rounded-md ml-2'>
+<i class='fas fa-trash'></i> Clear WiFi & Reset
+</button>
+</div>
+</div>
+</div>
+
+</div>
+<script>
+function toggleTheme(){const html=document.documentElement;const body=document.body;const icon=document.querySelector('#themeToggle i');if(body.classList.contains('bg-gray-900')){body.className='bg-gray-50 text-gray-900';html.classList.remove('dark');icon.className='fas fa-sun text-xl';localStorage.setItem('theme','light');}else{body.className='bg-gray-900 text-white';html.classList.add('dark');icon.className='fas fa-moon text-xl';localStorage.setItem('theme','dark');}}
+function loadTheme(){const theme=localStorage.getItem('theme')||'dark';const body=document.body;const html=document.documentElement;const icon=document.querySelector('#themeToggle i');if(theme==='light'){body.className='bg-gray-50 text-gray-900';html.classList.remove('dark');icon.className='fas fa-sun text-xl';}else{body.className='bg-gray-900 text-white';html.classList.add('dark');icon.className='fas fa-moon text-xl';}}
+const sensorConfig={RTD:{icon:'🌡️',label:'Temperature',unit:'°C',color:'text-red-500'},pH:{icon:'⚗️',label:'pH Level',unit:'',color:'text-purple-500'},EC:{icon:'⚡',label:'Conductivity',unit:'µS/cm',color:'text-cyan-500'},HUM:{icon:'💧',label:'Humidity',unit:'%',color:'text-blue-500'},DO:{icon:'🫧',label:'Dissolved Oxygen',unit:'mg/L',color:'text-teal-500'},ORP:{icon:'🔋',label:'ORP',unit:'mV',color:'text-pink-500'}};
+function displaySensorValues(sensors){const container=document.getElementById('sensor-values');if(!sensors||Object.keys(sensors).length===0){container.innerHTML='<div class="text-gray-500 dark:text-gray-400">No sensor data available</div>';return;}let html='';for(const type in sensors){const value=sensors[type];const cfg=sensorConfig[type]||{icon:'📊',label:type,unit:'',color:'text-gray-500'};if(typeof value==='object'&&!Array.isArray(value)){for(const field in value){const fieldLabel=field.replace('_',' ').replace(/\b\w/g,l=>l.toUpperCase());const fieldValue=typeof value[field]==='number'?value[field].toFixed(2):value[field];html+=`<div class='bg-white dark:bg-gray-700 p-4 rounded-lg border border-gray-200 dark:border-gray-600'>`;html+=`<div class='flex items-center justify-between mb-2'>`;html+=`<span class='text-2xl'>${cfg.icon}</span>`;html+=`<span class='text-xs text-gray-500 dark:text-gray-400'>${type}</span>`;html+=`</div>`;html+=`<div class='text-sm text-gray-600 dark:text-gray-300 mb-1'>${fieldLabel}</div>`;html+=`<div class='text-2xl font-bold ${cfg.color}'>${fieldValue}</div>`;html+=`</div>`;}}else if(typeof value==='number'){html+=`<div class='bg-white dark:bg-gray-700 p-4 rounded-lg border border-gray-200 dark:border-gray-600'>`;html+=`<div class='flex items-center justify-between mb-2'>`;html+=`<span class='text-2xl'>${cfg.icon}</span>`;html+=`</div>`;html+=`<div class='text-sm text-gray-600 dark:text-gray-300 mb-1'>${cfg.label}</div>`;html+=`<div class='text-2xl font-bold ${cfg.color}'>${value.toFixed(2)} ${cfg.unit}</div>`;html+=`</div>`;}}container.innerHTML=html;}
+async function loadStatus(){try{const res=await fetch('/api/status');if(!res.ok)throw new Error('Failed to load');const d=await res.json();document.getElementById('device-id').textContent=d.device_id;document.getElementById('wifi-ssid').textContent=d.wifi_ssid;document.getElementById('ip-addr').textContent=d.ip_address;const upMin=Math.floor(d.uptime/60),upHr=Math.floor(upMin/60);document.getElementById('uptime').textContent=upHr>0?`${upHr}h ${upMin%60}m`:`${upMin}m`;document.getElementById('current-time').textContent=d.current_time;const heapKB=(d.free_heap/1024).toFixed(1);document.getElementById('free-heap').textContent=heapKB+' KB';if(d.rssi){document.getElementById('wifi-rssi').textContent=d.rssi+' dBm';}if(d.cpu_usage){document.getElementById('cpu-usage').textContent=d.cpu_usage+'%';}if(d.sensors){displaySensorValues(d.sensors);}document.getElementById('status-dot').className='bg-green-500 w-3 h-3 rounded-full status-dot';document.getElementById('status-text').textContent='Device Online';}catch(e){console.error(e);document.getElementById('status-dot').className='bg-red-500 w-3 h-3 rounded-full';document.getElementById('status-text').textContent='Device Offline';}}
+async function testMQTT(){alert('Testing MQTT connection...');try{const r=await fetch('/api/test-mqtt',{method:'POST'});alert('MQTT test complete');}catch(e){alert('Test failed');}}
+async function rebootDevice(){if(!confirm('Reboot device now?'))return;await fetch('/api/reboot',{method:'POST'});alert('Device rebooting...');setTimeout(()=>location.reload(),10000);}
+async function clearWiFi(){if(!confirm('Clear WiFi and reset device?'))return;await fetch('/api/clear-wifi',{method:'POST'});alert('WiFi cleared. Restarting...');setTimeout(()=>location.reload(),10000);}
+async function saveSetting(){const interval=document.getElementById('mqtt-interval').value;await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mqtt_interval:parseInt(interval)})});alert('Settings saved!');}
+async function loadSensors(){try{const r=await fetch('/api/sensors',{signal:AbortSignal.timeout(10000)});const d=await r.json();const list=document.getElementById('sensor-list');if(d.count===0){list.innerHTML='<p class="text-gray-600 dark:text-gray-400">No sensors detected</p>';return;}list.innerHTML=d.sensors.map(s=>{let cfg=`<div class='bg-gray-50 dark:bg-gray-700 p-4 rounded-lg mb-4'>`;cfg+=`<h3 class='text-lg font-bold text-green-600 dark:text-green-400 mb-2'>${s.type} @ 0x${s.address.toString(16).toUpperCase()}</h3>`;if(s.firmware)cfg+=`<p class='text-sm text-gray-600 dark:text-gray-400 mb-4'>Firmware: ${s.firmware}</p>`;if(s.type!=='MAX17048'){cfg+=`<div class='mb-4'><label class='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>Name:</label><input class='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white' id='name-${s.address}' value='${s.name||''}'></div>`;cfg+=`<div class='mb-3'><label class='flex items-center text-gray-700 dark:text-gray-300'><input type='checkbox' class='mr-2' id='led-${s.address}' ${s.led?'checked':''}> LED On</label></div>`;cfg+=`<div class='mb-3'><label class='flex items-center text-gray-700 dark:text-gray-300'><input type='checkbox' class='mr-2' id='plock-${s.address}' ${s.plock?'checked':''}> Protocol Lock</label></div>`;if(s.type==='RTD')cfg+=`<div class='mb-4'><label class='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>Scale:</label><select class='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white' id='scale-${s.address}'><option ${s.scale==='C'?'selected':''}>C</option><option ${s.scale==='F'?'selected':''}>F</option><option ${s.scale==='K'?'selected':''}>K</option></select></div>`;if(s.type==='pH')cfg+=`<div class='mb-3'><label class='flex items-center text-gray-700 dark:text-gray-300'><input type='checkbox' class='mr-2' id='extscale-${s.address}' ${s.extended_scale?'checked':''}> Extended pH Scale</label></div>`;if(s.type==='EC'){cfg+=`<div class='mb-4'><label class='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>Probe K Value:</label><input class='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white' type='number' step='0.1' id='probe-${s.address}' value='${s.probe_type||1.0}'></div>`;cfg+=`<div class='mb-4'><label class='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>TDS Factor:</label><input class='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white' type='number' step='0.01' id='tds-${s.address}' value='${s.tds_factor||0.5}'></div>`}cfg+=`<button class='bg-green-600 dark:bg-green-400 hover:bg-green-700 dark:hover:bg-green-500 text-white px-4 py-2 rounded-md mt-2' onclick='saveSensorConfig(${s.address})'><i class='fas fa-save'></i> Save ${s.type} Settings</button>`;}cfg+=`</div>`;return cfg;}).join('');}catch(e){console.error('Failed to load sensors:',e);}}
+async function rescanSensors(){alert('Rescanning I2C bus...');await fetch('/api/sensors/rescan',{method:'POST'});await loadSensors();alert('Rescan complete!');}
+async function pauseSensors(){try{await fetch('/api/sensors/pause',{method:'POST'});alert('Sensor readings paused');}catch(e){alert('Failed to pause sensors');}}
+async function resumeSensors(){try{await fetch('/api/sensors/resume',{method:'POST'});alert('Sensor readings resumed');}catch(e){alert('Failed to resume sensors');}}
+async function saveSensorConfig(addr){const cfg={address:addr};const name=document.getElementById(`name-${addr}`)?.value;if(name)cfg.name=name;const led=document.getElementById(`led-${addr}`)?.checked;if(led!==undefined)cfg.led=led;const plock=document.getElementById(`plock-${addr}`)?.checked;if(plock!==undefined)cfg.plock=plock;const scale=document.getElementById(`scale-${addr}`)?.value;if(scale)cfg.scale=scale;const extscale=document.getElementById(`extscale-${addr}`)?.checked;if(extscale!==undefined)cfg.extended_scale=extscale;const probe=document.getElementById(`probe-${addr}`)?.value;if(probe)cfg.probe_type=parseFloat(probe);const tds=document.getElementById(`tds-${addr}`)?.value;if(tds)cfg.tds_factor=parseFloat(tds);await fetch('/api/sensors/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});alert('Sensor configuration saved!');await loadSensors();}
+function showTab(n){document.querySelectorAll('.tab').forEach((t,i)=>{if(i===n){t.className='px-6 py-3 text-green-600 dark:text-green-400 border-b-2 border-green-600 dark:border-green-400 font-semibold tab active';}else{t.className='px-6 py-3 text-gray-600 dark:text-gray-400 border-b-2 border-transparent hover:text-gray-900 dark:hover:text-white tab';}});document.querySelectorAll('.tab-content').forEach((c,i)=>{c.style.display=(i===n)?'block':'none';});if(n===1)loadSensors();}
+let isLoadingStatus=false;
+async function safeLoadStatus(){if(isLoadingStatus)return;isLoadingStatus=true;try{await loadStatus();}catch(e){console.error('Status load failed:',e);}finally{isLoadingStatus=false;}}
+async function initializeDashboard(){loadTheme();await safeLoadStatus();setInterval(safeLoadStatus,10000);}
+window.onload=()=>{initializeDashboard();};
+</script>
+</body>
+</html>

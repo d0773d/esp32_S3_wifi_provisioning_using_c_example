@@ -26,16 +26,15 @@ static const char *TAG = "MQTT_CLIENT";
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static mqtt_state_t s_mqtt_state = MQTT_STATE_DISCONNECTED;
-static TaskHandle_t s_sensor_task_handle = NULL;
-static uint32_t s_reading_interval_sec = 60; // Default: 60 seconds between sensor reading cycles
+static TaskHandle_t s_publish_task_handle = NULL;
+static uint32_t s_publish_interval_sec = 10; // Default: 10 seconds between MQTT publishes
 static uint32_t s_mqtt_reconnects = 0;
 static char s_device_id[32] = {0};
 static char s_mqtt_ca_cert[CLOUD_PROV_MAX_CERT_SIZE] = {0}; // Static buffer for CA certificate
-static bool s_sensor_reading_paused = false; // Flag to pause sensor reading for I2C operations
 
 // Forward declarations
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
-static void sensor_reading_task(void *arg);
+static void mqtt_publish_task(void *arg);
 
 /**
  * @brief MQTT event handler
@@ -172,160 +171,96 @@ float read_battery_level(void) {
 }
 
 /**
- * @brief Sensor reading task - reads all sensors sequentially then publishes
+ * @brief MQTT publish task - reads from sensor_manager cache and publishes to MQTT
  */
-static void sensor_reading_task(void *arg)
+static void mqtt_publish_task(void *arg)
 {
-    ESP_LOGI(TAG, "Sensor reading task started");
+    ESP_LOGI(TAG, "MQTT publish task started (interval: %lu seconds)", s_publish_interval_sec);
     
     while (1) {
-        // Check if sensor reading is paused (for I2C operations from web interface)
-        if (s_sensor_reading_paused) {
-            vTaskDelay(pdMS_TO_TICKS(500)); // Wait 500ms and check again
-            continue;
-        }
-        
         // Only publish if connected to MQTT broker
         if (s_mqtt_state != MQTT_STATE_CONNECTED) {
-            vTaskDelay(pdMS_TO_TICKS(1000)); // Wait 1 second before checking again
+            vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
         
-        // Read all EZO sensors sequentially - this blocks ~5 seconds per sensor
-        uint8_t sensor_count = sensor_manager_get_ezo_count();
-        ESP_LOGI(TAG, "Reading %d EZO sensors...", sensor_count);
+        // Skip publishing if sensor reading is in progress
+        if (sensor_manager_is_reading_in_progress()) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
         
-        // Create JSON root object
+        // Get cached sensor data from sensor_manager (non-blocking)
+        sensor_cache_t cache;
+        if (sensor_manager_get_cached_data(&cache) != ESP_OK) {
+            ESP_LOGW(TAG, "No cached sensor data available yet");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        
+        // Create JSON from cached data
         cJSON *root = cJSON_CreateObject();
         if (root == NULL) {
-            ESP_LOGW(TAG, "Failed to create JSON object");
-            vTaskDelay(pdMS_TO_TICKS(5000));
+            vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
         
-        // Add device_id
         cJSON_AddStringToObject(root, "device_id", s_device_id);
         
-        // Add sensors object
+        // Add sensors
         cJSON *sensors = cJSON_CreateObject();
-        if (sensors == NULL) {
-            cJSON_Delete(root);
-            ESP_LOGW(TAG, "Failed to create sensors object");
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            continue;
-        }
-        
-        // Read each sensor and add to JSON
-        for (uint8_t i = 0; i < sensor_count; i++) {
-            char sensor_type[16];
-            float values[4];
-            uint8_t value_count;
+        for (uint8_t i = 0; i < cache.sensor_count && i < 8; i++) {
+            cached_sensor_t *sensor = &cache.sensors[i];
+            if (!sensor->valid) continue;
             
-            if (sensor_manager_read_ezo_sensor(i, sensor_type, values, &value_count) == ESP_OK) {
-                if (value_count == 1) {
-                    // Single value sensor
-                    cJSON_AddNumberToObject(sensors, sensor_type, values[0]);
-                } else if (value_count > 1) {
-                    // Multi-value sensor - create object with named fields
-                    cJSON *sensor_obj = cJSON_CreateObject();
-                    
-                    // Define field names based on sensor type
-                    if (strcmp(sensor_type, "HUM") == 0) {
-                        // Get HUM sensor config to determine which parameters are enabled
-                        ezo_sensor_t *sensor = (ezo_sensor_t *)sensor_manager_get_ezo_sensor(i);
-                        if (sensor != NULL && sensor->config.hum.param_count > 0) {
-                            // Use dynamic parameter mapping based on enabled outputs
-                            for (uint8_t j = 0; j < value_count && j < sensor->config.hum.param_count; j++) {
-                                const char *param = sensor->config.hum.param_order[j];
-                                const char *field_name = NULL;
-                                
-                                if (strcmp(param, "HUM") == 0) {
-                                    field_name = "humidity";
-                                } else if (strcmp(param, "T") == 0) {
-                                    field_name = "air_temp";
-                                } else if (strcmp(param, "DEW") == 0) {
-                                    field_name = "dew_point";
-                                }
-                                
-                                if (field_name != NULL) {
-                                    cJSON_AddNumberToObject(sensor_obj, field_name, values[j]);
-                                }
-                            }
-                        } else {
-                            // Fallback if config unavailable
-                            if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "humidity", values[0]);
-                            if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "air_temp", values[1]);
-                            if (value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "dew_point", values[2]);
-                        }
-                    } else if (strcmp(sensor_type, "ORP") == 0) {
-                        if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "orp", values[0]);
-                    } else if (strcmp(sensor_type, "DO") == 0) {
-                        if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "dissolved_oxygen", values[0]);
-                        if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "saturation", values[1]);
-                    } else if (strcmp(sensor_type, "EC") == 0) {
-                        if (value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "conductivity", values[0]);
-                        if (value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "tds", values[1]);
-                        if (value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "salinity", values[2]);
-                        if (value_count >= 4) cJSON_AddNumberToObject(sensor_obj, "specific_gravity", values[3]);
-                    } else {
-                        // Unknown multi-value sensor - use generic field names
-                        for (uint8_t j = 0; j < value_count; j++) {
-                            char field_name[16];
-                            snprintf(field_name, sizeof(field_name), "value_%d", j);
-                            cJSON_AddNumberToObject(sensor_obj, field_name, values[j]);
-                        }
-                    }
-                    
-                    cJSON_AddItemToObject(sensors, sensor_type, sensor_obj);
+            if (sensor->value_count == 1) {
+                cJSON_AddNumberToObject(sensors, sensor->sensor_type, sensor->values[0]);
+            } else if (sensor->value_count > 1) {
+                cJSON *sensor_obj = cJSON_CreateObject();
+                if (strcmp(sensor->sensor_type, "HUM") == 0) {
+                    if (sensor->value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "humidity", sensor->values[0]);
+                    if (sensor->value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "air_temp", sensor->values[1]);
+                    if (sensor->value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "dew_point", sensor->values[2]);
+                } else if (strcmp(sensor->sensor_type, "EC") == 0) {
+                    if (sensor->value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "conductivity", sensor->values[0]);
+                    if (sensor->value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "tds", sensor->values[1]);
+                    if (sensor->value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "salinity", sensor->values[2]);
+                } else if (strcmp(sensor->sensor_type, "DO") == 0) {
+                    if (sensor->value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "dissolved_oxygen", sensor->values[0]);
+                    if (sensor->value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "saturation", sensor->values[1]);
                 }
+                cJSON_AddItemToObject(sensors, sensor->sensor_type, sensor_obj);
             }
-            
-            // Yield to allow other tasks (like HTTP server) to run between sensor reads
-            vTaskDelay(pdMS_TO_TICKS(100));
         }
-        
         cJSON_AddItemToObject(root, "sensors", sensors);
         
-        // Read battery level
-        float battery;
-        if (sensor_manager_read_battery_percentage(&battery) == ESP_OK) {
-            cJSON_AddNumberToObject(root, "battery", battery);
+        // Add battery
+        if (cache.battery_valid) {
+            cJSON_AddNumberToObject(root, "battery", cache.battery_percentage);
         }
         
-        // Get WiFi RSSI
-        wifi_ap_record_t ap_info;
-        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-            cJSON_AddNumberToObject(root, "rssi", ap_info.rssi);
-        }
+        // Add RSSI
+        cJSON_AddNumberToObject(root, "rssi", cache.rssi);
         
-        // Convert to JSON string
+        // Serialize and publish
         char *json_str = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
         
-        if (json_str == NULL) {
-            ESP_LOGW(TAG, "Failed to serialize JSON");
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            continue;
+        if (json_str != NULL) {
+            ESP_LOGI(TAG, "Publishing JSON: %s", json_str);
+            
+            char topic[128];
+            snprintf(topic, sizeof(topic), "kannacloud/sensor/%s/data", s_device_id);
+            
+            int msg_id = esp_mqtt_client_publish(s_mqtt_client, topic, json_str, 0, 1, 0);
+            if (msg_id >= 0) {
+                ESP_LOGI(TAG, "✓ MQTT data published successfully");
+            }
+            free(json_str);
         }
         
-        // Log the JSON string
-        ESP_LOGI(TAG, "Publishing JSON: %s", json_str);
-        
-        // Publish to MQTT
-        char topic[128];
-        snprintf(topic, sizeof(topic), "kannacloud/sensor/%s/data", s_device_id);
-        
-        int msg_id = esp_mqtt_client_publish(s_mqtt_client, topic, json_str, 0, 1, 0);
-        if (msg_id >= 0) {
-            ESP_LOGI(TAG, "✓ MQTT data published successfully");
-        } else {
-            ESP_LOGW(TAG, "✗ Failed to publish MQTT data");
-        }
-        
-        free(json_str);
-        
-        // Wait 5 seconds before next cycle
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        // Wait for next publish cycle
+        vTaskDelay(pdMS_TO_TICKS(s_publish_interval_sec * 1000));
     }
 }
 
@@ -442,25 +377,24 @@ esp_err_t mqtt_client_start(void)
         return ret;
     }
     
-    // Create sensor reading task pinned to Core 1 (application core)
-    // This keeps I2C sensor operations away from WiFi/MQTT on Core 0
-    if (s_sensor_task_handle == NULL) {
+    // Create MQTT publish task on Core 0 (network core)
+    if (s_publish_task_handle == NULL) {
         BaseType_t task_ret = xTaskCreatePinnedToCore(
-            sensor_reading_task,
-            "sensor_read",
+            mqtt_publish_task,
+            "mqtt_publish",
             4096,
             NULL,
             5,
-            &s_sensor_task_handle,
-            1  // Pin to Core 1 (application core)
+            &s_publish_task_handle,
+            0  // Pin to Core 0 (network core)
         );
         
         if (task_ret != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create sensor reading task");
+            ESP_LOGE(TAG, "Failed to create MQTT publish task");
             return ESP_FAIL;
         }
         
-        ESP_LOGI(TAG, "✓ Sensor reading task started (cycle interval: %lu seconds)", s_reading_interval_sec);
+        ESP_LOGI(TAG, "✓ MQTT publish task started (publish interval: %lu seconds)", s_publish_interval_sec);
     }
     
     return ESP_OK;
@@ -472,10 +406,10 @@ esp_err_t mqtt_client_stop(void)
         return ESP_OK;
     }
     
-    // Stop sensor reading task
-    if (s_sensor_task_handle != NULL) {
-        vTaskDelete(s_sensor_task_handle);
-        s_sensor_task_handle = NULL;
+    // Stop MQTT publish task
+    if (s_publish_task_handle != NULL) {
+        vTaskDelete(s_publish_task_handle);
+        s_publish_task_handle = NULL;
     }
     
     // Publish offline status before disconnecting
@@ -516,19 +450,7 @@ mqtt_state_t mqtt_get_state(void)
     return s_mqtt_state;
 }
 
-void mqtt_pause_sensor_reading(void)
-{
-    ESP_LOGI(TAG, "Pausing sensor reading task for I2C operations...");
-    s_sensor_reading_paused = true;
-    // Wait a bit to ensure task sees the flag
-    vTaskDelay(pdMS_TO_TICKS(100));
-}
 
-void mqtt_resume_sensor_reading(void)
-{
-    ESP_LOGI(TAG, "Resuming sensor reading task");
-    s_sensor_reading_paused = false;
-}
 
 esp_err_t mqtt_publish_telemetry(const telemetry_data_t *data)
 {
@@ -817,9 +739,10 @@ esp_err_t mqtt_unsubscribe(const char *topic)
 
 esp_err_t mqtt_set_telemetry_interval(uint32_t interval_sec)
 {
-    s_reading_interval_sec = interval_sec;
-    ESP_LOGI(TAG, "Sensor reading cycle interval updated to %lu seconds", interval_sec);
-    // Task will pick up the new interval on next cycle
+    s_publish_interval_sec = interval_sec;
+    // Also update sensor reading interval
+    sensor_manager_set_reading_interval(interval_sec);
+    ESP_LOGI(TAG, "MQTT publish interval updated to %lu seconds", interval_sec);
     return ESP_OK;
 }
 
@@ -834,3 +757,5 @@ esp_err_t mqtt_get_device_id(char *device_id, size_t size)
     
     return ESP_OK;
 }
+
+

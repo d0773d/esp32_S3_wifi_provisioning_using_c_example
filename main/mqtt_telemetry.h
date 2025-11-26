@@ -98,20 +98,7 @@ esp_err_t mqtt_client_start(void);
  */
 esp_err_t mqtt_client_stop(void);
 
-/**
- * @brief Pause sensor reading task
- * 
- * Temporarily stops the sensor reading loop to allow safe I2C operations
- * from other sources (e.g., web interface sensor configuration)
- */
-void mqtt_pause_sensor_reading(void);
 
-/**
- * @brief Resume sensor reading task
- * 
- * Resumes the sensor reading loop after pause
- */
-void mqtt_resume_sensor_reading(void);
 
 /**
  * @brief Deinitialize MQTT client and free resources
@@ -209,6 +196,17 @@ esp_err_t mqtt_set_telemetry_interval(uint32_t interval_sec);
  * @return ESP_OK on success, error code otherwise
  */
 esp_err_t mqtt_get_device_id(char *device_id, size_t size);
+
+/**
+ * @brief Get last cached sensor readings (non-blocking)
+ * 
+ * Returns the most recent sensor readings from the background task.
+ * This does NOT perform any I2C operations and is safe to call from HTTP handlers.
+ * 
+ * @param data Pointer to kannacloud_data_t structure to fill with cached data
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if no data available yet
+ */
+esp_err_t mqtt_get_cached_sensor_data(kannacloud_data_t *data);
 
 #ifdef __cplusplus
 }

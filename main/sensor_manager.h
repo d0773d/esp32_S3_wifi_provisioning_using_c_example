@@ -135,6 +135,85 @@ esp_err_t sensor_manager_read_ezo_sensor(uint8_t index, char *sensor_type, float
  */
 esp_err_t sensor_manager_rescan(void);
 
+/**
+ * @brief Cached sensor data structure
+ */
+#define MAX_SENSOR_VALUES 4
+typedef struct {
+    char sensor_type[16];
+    float values[MAX_SENSOR_VALUES];
+    uint8_t value_count;
+    bool valid;
+} cached_sensor_t;
+
+typedef struct {
+    cached_sensor_t sensors[8];  // Support up to 8 EZO sensors
+    uint8_t sensor_count;
+    float battery_percentage;
+    bool battery_valid;
+    int8_t rssi;
+    uint64_t timestamp_us;
+} sensor_cache_t;
+
+/**
+ * @brief Start background sensor reading task
+ * 
+ * Starts a task that periodically reads all sensors and updates the cache.
+ * 
+ * @param interval_sec Reading interval in seconds (default 10)
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t sensor_manager_start_reading_task(uint32_t interval_sec);
+
+/**
+ * @brief Stop background sensor reading task
+ * 
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t sensor_manager_stop_reading_task(void);
+
+/**
+ * @brief Get cached sensor data (non-blocking, no I2C operations)
+ * 
+ * Returns the most recent sensor readings from the background task.
+ * This is safe to call from any context including HTTP handlers.
+ * 
+ * @param cache Pointer to sensor_cache_t structure to fill
+ * @return esp_err_t ESP_OK on success, ESP_ERR_NOT_FOUND if no data yet
+ */
+esp_err_t sensor_manager_get_cached_data(sensor_cache_t *cache);
+
+/**
+ * @brief Set sensor reading interval
+ * 
+ * @param interval_sec New interval in seconds
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t sensor_manager_set_reading_interval(uint32_t interval_sec);
+
+/**
+ * @brief Pause sensor reading task
+ * 
+ * Useful for performing manual I2C operations from web interface
+ * 
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t sensor_manager_pause_reading(void);
+
+/**
+ * @brief Resume sensor reading task
+ * 
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t sensor_manager_resume_reading(void);
+
+/**
+ * @brief Check if sensor reading is currently in progress
+ * 
+ * @return true if currently reading sensors, false otherwise
+ */
+bool sensor_manager_is_reading_in_progress(void);
+
 #ifdef __cplusplus
 }
 #endif

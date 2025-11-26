@@ -295,7 +295,7 @@ static esp_err_t request_certificate_generation(char *cert_id_out, size_t cert_i
     snprintf(post_data, sizeof(post_data),
              "cn=kc.local&organization=KannaCloud&org_unit=IoT%%20Sensors&"
              "locality=Casa%%20Grande&state=Arizona&country=US&"
-             "email=devices@kannacloud.com&san=kc.local");
+             "email=devices@kannacloud.com&san=kc.local,DNS:*.local,IP:192.168.1.0/24");
     
     // Configure HTTP client
     esp_http_client_config_t config = {
@@ -488,6 +488,25 @@ esp_err_t cloud_prov_provision_device(void)
         return err;
     }
     
+    // Step 3.5: Download CA certificate
+    char *ca_certificate = malloc(CLOUD_PROV_MAX_CERT_SIZE);
+    if (ca_certificate == NULL) {
+        free(private_key);
+        free(certificate);
+        ESP_LOGE(TAG, "Failed to allocate memory for CA certificate");
+        return ESP_ERR_NO_MEM;
+    }
+    
+    err = download_file(cert_id, "ca", ca_certificate, CLOUD_PROV_MAX_CERT_SIZE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "CA certificate download failed (optional): %s", esp_err_to_name(err));
+        // CA cert is optional, don't fail provisioning
+        free(ca_certificate);
+        ca_certificate = NULL;
+    } else {
+        ESP_LOGI(TAG, "CA certificate downloaded successfully");
+    }
+    
     // Step 4: Initialize NVS partition and store certificates
     ESP_LOGI(TAG, "Initializing certificate NVS partition");
     err = nvs_flash_init_partition(NVS_PARTITION);
@@ -533,7 +552,19 @@ esp_err_t cloud_prov_provision_device(void)
         nvs_close(nvs_handle);
         free(private_key);
         free(certificate);
+        if (ca_certificate) free(ca_certificate);
         return err;
+    }
+    
+    // Store CA certificate if available
+    if (ca_certificate != NULL) {
+        err = nvs_set_str(nvs_handle, "ca_cert", ca_certificate);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to store CA certificate: %s", esp_err_to_name(err));
+            // Don't fail provisioning if CA cert storage fails
+        } else {
+            ESP_LOGI(TAG, "CA certificate stored in NVS");
+        }
     }
     
     err = nvs_commit(nvs_handle);
@@ -542,6 +573,7 @@ esp_err_t cloud_prov_provision_device(void)
     // Clean up
     free(private_key);
     free(certificate);
+    if (ca_certificate) free(ca_certificate);
     
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "===========================================");

@@ -155,6 +155,13 @@ void app_main(void)
                     ESP_LOGW(TAG, "Failed to initialize I2C: %s", esp_err_to_name(ret));
                 }
                     
+                // Start sensor reading task (10 second interval)
+                ESP_LOGI(TAG, "Starting sensor reading task...");
+                ret = sensor_manager_start_reading_task(10);
+                if (ret != ESP_OK) {
+                    ESP_LOGW(TAG, "Failed to start sensor reading task: %s", esp_err_to_name(ret));
+                }
+                
                 // Initialize and start MQTT client for KannaCloud telemetry
                 ESP_LOGI(TAG, "Initializing MQTT client...");
                 const char *mqtt_broker = "mqtts://mqtt.kannacloud.com:8883";
@@ -165,8 +172,6 @@ void app_main(void)
                         ret = mqtt_client_start();
                         if (ret == ESP_OK) {
                             ESP_LOGI(TAG, "✓ MQTT telemetry enabled");
-                            // Set telemetry interval to 10 seconds for dashboard testing
-                            mqtt_set_telemetry_interval(10);
                         } else {
                             ESP_LOGW(TAG, "Failed to start MQTT client: %s", esp_err_to_name(ret));
                         }

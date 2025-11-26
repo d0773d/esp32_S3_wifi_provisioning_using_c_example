@@ -8,8 +8,11 @@
 #include "max17048.h"
 #include "ezo_sensor.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <string.h>
 
 static const char *TAG = "SENSOR_MGR";
@@ -30,7 +33,7 @@ static int s_do_index = -1;   // Dissolved oxygen
 static int s_orp_index = -1;  // ORP
 static int s_hum_index = -1;  // Humidity
 
-// Cached sensor readings (last successful values)
+// Cached sensor readings (last successful values) - old per-sensor cache
 typedef struct {
     float values[4];
     uint8_t count;
@@ -40,6 +43,20 @@ typedef struct {
 
 static cached_sensor_data_t s_cached_readings[MAX_EZO_SENSORS] = {0};
 #define CACHE_TIMEOUT_MS 300000  // 5 minutes - consider cached data stale after this
+
+// Global sensor cache for API access
+static sensor_cache_t s_sensor_cache = {0};
+static bool s_cache_valid = false;
+static SemaphoreHandle_t s_cache_mutex = NULL;
+
+// Background reading task
+static TaskHandle_t s_reading_task_handle = NULL;
+static uint32_t s_reading_interval_sec = 10;
+static bool s_reading_paused = false;
+static bool s_reading_in_progress = false;
+
+// Forward declaration
+static void sensor_reading_task(void *arg);
 
 /**
  * @brief Initialize all sensors
@@ -337,4 +354,168 @@ esp_err_t sensor_manager_rescan(void) {
     
     // Reinitialize all sensors
     return sensor_manager_init();
+}
+
+/**
+ * @brief Background sensor reading task
+ */
+static void sensor_reading_task(void *arg) {
+    ESP_LOGI(TAG, "Sensor reading task started (interval: %lu seconds)", s_reading_interval_sec);
+    
+    // Perform first read immediately
+    bool first_read = true;
+    
+    while (1) {
+        // Check if reading is paused
+        if (s_reading_paused) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        
+        // Wait before next reading (except for first read)
+        if (!first_read) {
+            vTaskDelay(pdMS_TO_TICKS(s_reading_interval_sec * 1000));
+        }
+        first_read = false;
+        
+        // Read all sensors
+        if (s_cache_mutex != NULL && xSemaphoreTake(s_cache_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            s_reading_in_progress = true;
+            s_sensor_cache.sensor_count = 0;
+            s_sensor_cache.battery_valid = false;
+            s_sensor_cache.timestamp_us = esp_timer_get_time();
+            
+            // Read battery
+            if (s_battery_available) {
+                float battery_pct;
+                if (sensor_manager_read_battery_percentage(&battery_pct) == ESP_OK) {
+                    s_sensor_cache.battery_percentage = battery_pct;
+                    s_sensor_cache.battery_valid = true;
+                }
+            }
+            
+            // Read RSSI
+            wifi_ap_record_t ap_info;
+            if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+                s_sensor_cache.rssi = ap_info.rssi;
+            }
+            
+            // Read all EZO sensors
+            for (uint8_t i = 0; i < s_ezo_count && i < 8; i++) {
+                cached_sensor_t *cached = &s_sensor_cache.sensors[i];
+                
+                if (sensor_manager_read_ezo_sensor(i, cached->sensor_type, cached->values, &cached->value_count) == ESP_OK) {
+                    cached->valid = true;
+                    s_sensor_cache.sensor_count++;
+                } else {
+                    cached->valid = false;
+                }
+                
+                // Yield between sensor reads
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            
+            s_cache_valid = true;
+            s_reading_in_progress = false;
+            xSemaphoreGive(s_cache_mutex);
+            
+            if (s_sensor_cache.sensor_count > 0) {
+                ESP_LOGI(TAG, "✓ Cache updated with %u sensors", s_sensor_cache.sensor_count);
+            }
+        }
+    }
+}
+
+esp_err_t sensor_manager_start_reading_task(uint32_t interval_sec) {
+    if (s_reading_task_handle != NULL) {
+        ESP_LOGW(TAG, "Reading task already running");
+        return ESP_OK;
+    }
+    
+    s_reading_interval_sec = interval_sec;
+    
+    // Create mutex for cache access
+    if (s_cache_mutex == NULL) {
+        s_cache_mutex = xSemaphoreCreateMutex();
+        if (s_cache_mutex == NULL) {
+            ESP_LOGE(TAG, "Failed to create cache mutex");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    
+    // Initialize cache as valid but empty to prevent startup warnings
+    s_cache_valid = false;  // Will be set true after first read completes
+    
+    // Create reading task on Core 1
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        sensor_reading_task,
+        "sensor_read",
+        4096,
+        NULL,
+        5,
+        &s_reading_task_handle,
+        1  // Core 1
+    );
+    
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create reading task");
+        return ESP_FAIL;
+    }
+    
+    ESP_LOGI(TAG, "Sensor reading task started");
+    return ESP_OK;
+}
+
+esp_err_t sensor_manager_stop_reading_task(void) {
+    if (s_reading_task_handle != NULL) {
+        vTaskDelete(s_reading_task_handle);
+        s_reading_task_handle = NULL;
+        ESP_LOGI(TAG, "Sensor reading task stopped");
+    }
+    return ESP_OK;
+}
+
+esp_err_t sensor_manager_get_cached_data(sensor_cache_t *cache) {
+    if (cache == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    if (!s_cache_valid) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    if (s_cache_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    // Copy cached data (thread-safe)
+    if (xSemaphoreTake(s_cache_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        memcpy(cache, &s_sensor_cache, sizeof(sensor_cache_t));
+        xSemaphoreGive(s_cache_mutex);
+        return ESP_OK;
+    }
+    
+    return ESP_FAIL;
+}
+
+esp_err_t sensor_manager_set_reading_interval(uint32_t interval_sec) {
+    s_reading_interval_sec = interval_sec;
+    ESP_LOGI(TAG, "Reading interval updated to %lu seconds", interval_sec);
+    return ESP_OK;
+}
+
+esp_err_t sensor_manager_pause_reading(void) {
+    s_reading_paused = true;
+    ESP_LOGI(TAG, "Sensor reading paused");
+    return ESP_OK;
+}
+
+esp_err_t sensor_manager_resume_reading(void) {
+    s_reading_paused = false;
+    ESP_LOGI(TAG, "Sensor reading resumed");
+    return ESP_OK;
+}
+
+bool sensor_manager_is_reading_in_progress(void) {
+    return s_reading_in_progress;
 }

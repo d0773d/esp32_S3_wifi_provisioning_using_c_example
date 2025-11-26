@@ -13,6 +13,8 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "cJSON.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <string.h>
 
 static const char *TAG = "HTTP_SERVER";
@@ -43,7 +45,6 @@ static const char *HTML_DASHBOARD =
 "<title>ESP32 KannaCloud Dashboard</title>"
 "<script src='https://cdn.tailwindcss.com'></script>"
 "<link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css'>"
-"<script src='https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js'></script>"
 "<script>tailwind.config={darkMode:'class'}</script>"
 "<style>"
 "@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }"
@@ -135,8 +136,10 @@ static const char *HTML_DASHBOARD =
 "</div>"
 ""
 "<div class='tab-content active' id='tab-0'>"
-"<h2 class='text-xl font-bold text-gray-900 dark:text-white mb-4'>📈 Live Sensor Metrics</h2>"
-"<div style='position:relative;height:300px;margin-top:20px'><canvas id='sensorChart'></canvas></div>"
+"<h2 class='text-xl font-bold text-gray-900 dark:text-white mb-4'>📊 Current Sensor Values</h2>"
+"<div id='sensor-values' class='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'>"
+"<div class='text-gray-500 dark:text-gray-400'>Loading sensor data...</div>"
+"</div>"
 "</div>"
 ""
 "<div class='tab-content' id='tab-1' style='display:none'>"
@@ -173,6 +176,14 @@ static const char *HTML_DASHBOARD =
 ""
 "<div class='tab-content' id='tab-3' style='display:none'>"
 "<h2 class='text-xl font-bold text-gray-900 dark:text-white mb-4'>🔧 Device Control</h2>"
+"<div class='mb-6 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg'>"
+"<h3 class='text-lg font-semibold text-blue-900 dark:text-blue-100 mb-2'>🔒 Trust Certificate</h3>"
+"<p class='text-sm text-blue-800 dark:text-blue-200 mb-3'>Download and install the CA certificate to trust all KannaCloud devices in your browser.</p>"
+"<a href='/ca.crt' download='kannacloud-ca.crt' class='inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md'>"
+"<i class='fas fa-download'></i> Download CA Certificate"
+"</a>"
+"<p class='text-xs text-blue-700 dark:text-blue-300 mt-2'>After download: Settings → Security → Manage Certificates → Import to Trusted Root</p>"
+"</div>"
 "<div class='space-y-3'>"
 "<button onclick='testMQTT()' class='bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-900 dark:text-white px-4 py-2 rounded-md'>"
 "<i class='fas fa-wifi'></i> Test MQTT Connection"
@@ -221,40 +232,38 @@ static const char *HTML_DASHBOARD =
 "icon.className='fas fa-moon text-xl';"
 "}"
 "}"
-"let chart; const maxDataPoints=20; const chartData={labels:[]};"
-"const sensorConfigs={RTD:{label:'Temperature',unit:'°C',color:'#ef4444',yAxisID:'y'},pH:{label:'pH',unit:'',color:'#8b5cf6',yAxisID:'y'},EC_conductivity:{label:'Conductivity',unit:'µS',color:'#06b6d4',yAxisID:'y1'},EC_tds:{label:'TDS',unit:'ppm',color:'#10b981',yAxisID:'y1'},EC_salinity:{label:'Salinity',unit:'PSU',color:'#f59e0b',yAxisID:'y1'},HUM_humidity:{label:'Humidity',unit:'%',color:'#3b82f6',yAxisID:'y'},HUM_air_temp:{label:'Air Temp',unit:'°C',color:'#f97316',yAxisID:'y'},HUM_dew_point:{label:'Dew Point',unit:'°C',color:'#a855f7',yAxisID:'y'},DO_dissolved_oxygen:{label:'DO',unit:'mg/L',color:'#14b8a6',yAxisID:'y'},DO_saturation:{label:'DO Sat',unit:'%',color:'#06b6d4',yAxisID:'y'},ORP_orp:{label:'ORP',unit:'mV',color:'#ec4899',yAxisID:'y'}};"
-"function initChart(){"
-"const ctx=document.getElementById('sensorChart').getContext('2d');"
-"chart=new Chart(ctx,{type:'line',data:{labels:chartData.labels,datasets:[]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top'}},scales:{y:{beginAtZero:false,title:{display:true,text:'Primary (°C, pH, %, mg/L, mV)'},position:'left'},y1:{beginAtZero:false,title:{display:true,text:'Secondary (µS, ppm, PSU)'},position:'right',grid:{drawOnChartArea:false}}}}});"
-"}"
-"function updateChart(sensors){"
-"const now=new Date().toLocaleTimeString();"
-"chartData.labels.push(now);"
-"if(chartData.labels.length>maxDataPoints)chartData.labels.shift();"
-"for(const sensorType in sensors){"
-"const value=sensors[sensorType];"
+"const sensorConfig={RTD:{icon:'🌡️',label:'Temperature',unit:'°C',color:'text-red-500'},pH:{icon:'⚗️',label:'pH Level',unit:'',color:'text-purple-500'},EC:{icon:'⚡',label:'Conductivity',unit:'µS/cm',color:'text-cyan-500'},HUM:{icon:'💧',label:'Humidity',unit:'%',color:'text-blue-500'},DO:{icon:'🫧',label:'Dissolved Oxygen',unit:'mg/L',color:'text-teal-500'},ORP:{icon:'🔋',label:'ORP',unit:'mV',color:'text-pink-500'}};"
+"function displaySensorValues(sensors){"
+"const container=document.getElementById('sensor-values');"
+"if(!sensors||Object.keys(sensors).length===0){container.innerHTML='<div class=\"text-gray-500 dark:text-gray-400\">No sensor data available</div>';return;}"
+"let html='';"
+"for(const type in sensors){"
+"const value=sensors[type];"
+"const cfg=sensorConfig[type]||{icon:'📊',label:type,unit:'',color:'text-gray-500'};"
 "if(typeof value==='object'&&!Array.isArray(value)){"
 "for(const field in value){"
-"const key=sensorType+'_'+field;"
-"if(!chartData[key]){"
-"chartData[key]=[];"
-"const cfg=sensorConfigs[key]||{label:sensorType+' '+field,unit:'',color:'#94a3b8',yAxisID:'y'};"
-"chart.data.datasets.push({label:cfg.label+(cfg.unit?' ('+cfg.unit+')':''),data:chartData[key],borderColor:cfg.color,backgroundColor:cfg.color+'20',tension:0.4,yAxisID:cfg.yAxisID});"
-"}"
-"chartData[key].push(value[field]);"
-"if(chartData[key].length>maxDataPoints)chartData[key].shift();"
+"const fieldLabel=field.replace('_',' ').replace(/\\b\\w/g,l=>l.toUpperCase());"
+"const fieldValue=typeof value[field]==='number'?value[field].toFixed(2):value[field];"
+"html+=`<div class='bg-white dark:bg-gray-700 p-4 rounded-lg border border-gray-200 dark:border-gray-600'>`;"
+"html+=`<div class='flex items-center justify-between mb-2'>`;"
+"html+=`<span class='text-2xl'>${cfg.icon}</span>`;"
+"html+=`<span class='text-xs text-gray-500 dark:text-gray-400'>${type}</span>`;"
+"html+=`</div>`;"
+"html+=`<div class='text-sm text-gray-600 dark:text-gray-300 mb-1'>${fieldLabel}</div>`;"
+"html+=`<div class='text-2xl font-bold ${cfg.color}'>${fieldValue}</div>`;"
+"html+=`</div>`;"
 "}"
 "}else if(typeof value==='number'){"
-"if(!chartData[sensorType]){"
-"chartData[sensorType]=[];"
-"const cfg=sensorConfigs[sensorType]||{label:sensorType,unit:'',color:'#94a3b8',yAxisID:'y'};"
-"chart.data.datasets.push({label:cfg.label+(cfg.unit?' ('+cfg.unit+')':''),data:chartData[sensorType],borderColor:cfg.color,backgroundColor:cfg.color+'20',tension:0.4,yAxisID:cfg.yAxisID});"
+"html+=`<div class='bg-white dark:bg-gray-700 p-4 rounded-lg border border-gray-200 dark:border-gray-600'>`;"
+"html+=`<div class='flex items-center justify-between mb-2'>`;"
+"html+=`<span class='text-2xl'>${cfg.icon}</span>`;"
+"html+=`</div>`;"
+"html+=`<div class='text-sm text-gray-600 dark:text-gray-300 mb-1'>${cfg.label}</div>`;"
+"html+=`<div class='text-2xl font-bold ${cfg.color}'>${value.toFixed(2)} ${cfg.unit}</div>`;"
+"html+=`</div>`;"
 "}"
-"chartData[sensorType].push(value);"
-"if(chartData[sensorType].length>maxDataPoints)chartData[sensorType].shift();"
 "}"
-"}"
-"if(chart)chart.update();"
+"container.innerHTML=html;"
 "}"
 "async function loadStatus(){"
 "try{"
@@ -271,7 +280,7 @@ static const char *HTML_DASHBOARD =
 "document.getElementById('free-heap').textContent=heapKB+' KB';"
 "if(d.rssi){document.getElementById('wifi-rssi').textContent=d.rssi+' dBm';}"
 "if(d.cpu_usage){document.getElementById('cpu-usage').textContent=d.cpu_usage+'%';}"
-"if(d.sensors){updateChart(d.sensors);}"
+"if(d.sensors){displaySensorValues(d.sensors);}"
 "document.getElementById('status-dot').className='bg-green-500 w-3 h-3 rounded-full status-dot';"
 "document.getElementById('status-text').textContent='Device Online';"
 "}catch(e){console.error(e);"
@@ -339,10 +348,31 @@ static const char *HTML_DASHBOARD =
 "});"
 "if(n===1)loadSensors();"
 "}"
-"window.onload=()=>{loadTheme();initChart();loadStatus();setInterval(loadStatus,5000);};"
+"let isLoadingStatus=false;"
+"async function safeLoadStatus(){"
+"if(isLoadingStatus)return;"
+"isLoadingStatus=true;"
+"try{await loadStatus();}catch(e){console.error('Status load failed:',e);}"
+"finally{isLoadingStatus=false;}}"
+"async function initializeDashboard(){"
+"loadTheme();"
+"await safeLoadStatus();"
+"setInterval(safeLoadStatus,10000);"
+"}"
+"window.onload=()=>{initializeDashboard();};"
 "</script>"
 "</body>"
 "</html>";
+
+/**
+ * @brief Favicon handler - return 204 No Content to avoid 404 errors
+ */
+static esp_err_t favicon_handler(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
 
 /**
  * @brief Root handler - serve dashboard
@@ -350,6 +380,7 @@ static const char *HTML_DASHBOARD =
 static esp_err_t root_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Connection", "keep-alive");
     httpd_resp_send(req, HTML_DASHBOARD, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
@@ -410,8 +441,47 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     // TODO: Implement more accurate CPU monitoring
     cJSON_AddNumberToObject(root, "cpu_usage", 25);
     
-    // Note: Sensor data removed from status endpoint to prevent I2C conflicts
-    // Sensor data is published via MQTT and can be viewed in the Sensors tab
+    // Get cached sensor data from sensor_manager (non-blocking, no I2C operations)
+    sensor_cache_t cache;
+    if (sensor_manager_get_cached_data(&cache) == ESP_OK) {
+        cJSON *sensors = cJSON_CreateObject();
+        
+        // Add battery if available
+        if (cache.battery_valid) {
+            cJSON_AddNumberToObject(root, "battery", cache.battery_percentage);
+        }
+        
+        // Add all cached sensors
+        for (uint8_t i = 0; i < cache.sensor_count && i < 8; i++) {
+            cached_sensor_t *sensor = &cache.sensors[i];
+            if (!sensor->valid) continue;
+            
+            if (sensor->value_count == 1) {
+                // Single value sensor
+                cJSON_AddNumberToObject(sensors, sensor->sensor_type, sensor->values[0]);
+            } else if (sensor->value_count > 1) {
+                // Multi-value sensor
+                cJSON *sensor_obj = cJSON_CreateObject();
+                
+                if (strcmp(sensor->sensor_type, "HUM") == 0) {
+                    if (sensor->value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "humidity", sensor->values[0]);
+                    if (sensor->value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "air_temp", sensor->values[1]);
+                    if (sensor->value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "dew_point", sensor->values[2]);
+                } else if (strcmp(sensor->sensor_type, "EC") == 0) {
+                    if (sensor->value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "conductivity", sensor->values[0]);
+                    if (sensor->value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "tds", sensor->values[1]);
+                    if (sensor->value_count >= 3) cJSON_AddNumberToObject(sensor_obj, "salinity", sensor->values[2]);
+                } else if (strcmp(sensor->sensor_type, "DO") == 0) {
+                    if (sensor->value_count >= 1) cJSON_AddNumberToObject(sensor_obj, "dissolved_oxygen", sensor->values[0]);
+                    if (sensor->value_count >= 2) cJSON_AddNumberToObject(sensor_obj, "saturation", sensor->values[1]);
+                }
+                
+                cJSON_AddItemToObject(sensors, sensor->sensor_type, sensor_obj);
+            }
+        }
+        
+        cJSON_AddItemToObject(root, "sensors", sensors);
+    }
     
     // Send JSON response
     const char *json_str = cJSON_PrintUnformatted(root);
@@ -522,7 +592,7 @@ static esp_err_t api_settings_handler(httpd_req_t *req)
  */
 static esp_err_t api_sensors_pause_handler(httpd_req_t *req)
 {
-    mqtt_pause_sensor_reading();
+    sensor_manager_pause_reading();
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"status\":\"paused\"}");
     return ESP_OK;
@@ -533,7 +603,7 @@ static esp_err_t api_sensors_pause_handler(httpd_req_t *req)
  */
 static esp_err_t api_sensors_resume_handler(httpd_req_t *req)
 {
-    mqtt_resume_sensor_reading();
+    sensor_manager_resume_reading();
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"status\":\"resumed\"}");
     return ESP_OK;
@@ -718,6 +788,13 @@ static esp_err_t api_sensors_config_handler(httpd_req_t *req)
 }
 
 // URI handlers
+static const httpd_uri_t favicon_uri = {
+    .uri = "/favicon.ico",
+    .method = HTTP_GET,
+    .handler = favicon_handler,
+    .user_ctx = NULL
+};
+
 static const httpd_uri_t root_uri = {
     .uri = "/",
     .method = HTTP_GET,
@@ -795,6 +872,59 @@ static const httpd_uri_t api_sensors_resume_uri = {
     .user_ctx = NULL
 };
 
+/**
+ * @brief Handler for CA certificate download
+ */
+static esp_err_t ca_cert_handler(httpd_req_t *req)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open_from_partition("https", "https", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "CA certificate not found");
+        return ESP_FAIL;
+    }
+    
+    size_t ca_cert_len = 0;
+    err = nvs_get_str(nvs_handle, "ca_cert", NULL, &ca_cert_len);
+    if (err != ESP_OK || ca_cert_len == 0) {
+        nvs_close(nvs_handle);
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "CA certificate not available");
+        return ESP_FAIL;
+    }
+    
+    char *ca_cert = malloc(ca_cert_len);
+    if (ca_cert == NULL) {
+        nvs_close(nvs_handle);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    
+    err = nvs_get_str(nvs_handle, "ca_cert", ca_cert, &ca_cert_len);
+    nvs_close(nvs_handle);
+    
+    if (err != ESP_OK) {
+        free(ca_cert);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read CA certificate");
+        return ESP_FAIL;
+    }
+    
+    // Set content type and disposition for download
+    httpd_resp_set_type(req, "application/x-pem-file");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"kannacloud-ca.crt\"");
+    
+    httpd_resp_send(req, ca_cert, ca_cert_len - 1);
+    free(ca_cert);
+    
+    return ESP_OK;
+}
+
+static const httpd_uri_t ca_cert_uri = {
+    .uri = "/ca.crt",
+    .method = HTTP_GET,
+    .handler = ca_cert_handler,
+    .user_ctx = NULL
+};
+
 esp_err_t http_server_start(void)
 {
     if (s_server != NULL) {
@@ -844,9 +974,13 @@ esp_err_t http_server_start(void)
     // Configure HTTPS server
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.httpd.max_uri_handlers = 15;  // Increased for pause/resume endpoints
-    config.httpd.stack_size = 10240;
-    config.httpd.max_open_sockets = 3;  // Limit concurrent connections to save memory
+    config.httpd.stack_size = 8192;  // Reduced stack to save memory
+    config.httpd.max_open_sockets = 3;  // Allow multiple connections now that PSRAM is enabled
     config.httpd.lru_purge_enable = true;  // Enable automatic cleanup of old connections
+    config.httpd.close_fn = NULL;  // Use default close function
+    config.httpd.recv_wait_timeout = 30;  // Increased timeout for SSL handshake (was 10)
+    config.httpd.send_wait_timeout = 30;  // Increased timeout for SSL handshake (was 10)
+    config.port_insecure = 0;  // Disable insecure port (HTTPS only)
     
     // Set certificates (PEM format from NVS is already null-terminated)
     // mbedTLS needs length + 1 to include the null terminator
@@ -854,6 +988,10 @@ esp_err_t http_server_start(void)
     config.servercert_len = cert_len + 1;
     config.prvtkey_pem = (const uint8_t *)private_key;
     config.prvtkey_len = key_len + 1;
+    
+    // Skip client certificate verification (allows browsers to connect without trusting cert)
+    config.session_tickets = false;  // Disable session resumption for testing
+    config.use_secure_element = false;  // Not using hardware secure element
     
     // Start server
     err = httpd_ssl_start(&s_server, &config);
@@ -868,7 +1006,9 @@ esp_err_t http_server_start(void)
     }
     
     // Register URI handlers
+    httpd_register_uri_handler(s_server, &favicon_uri);
     httpd_register_uri_handler(s_server, &root_uri);
+    httpd_register_uri_handler(s_server, &ca_cert_uri);  // CA certificate download
     httpd_register_uri_handler(s_server, &api_status_uri);
     httpd_register_uri_handler(s_server, &api_clear_wifi_uri);
     httpd_register_uri_handler(s_server, &api_reboot_uri);
